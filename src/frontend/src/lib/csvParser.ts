@@ -163,8 +163,15 @@ function buildColumns(
   sampleRows: string[][],
 ): { originalColumns: string[]; columns: ColumnDef[] } {
   const originalColumns = headers.slice();
+  const keyOccurrences = new Map<string, number>();
   const columns: ColumnDef[] = headers.map((header, i) => {
-    const key = normalizeHeader(header) || `col_${i}`;
+    const baseKey = normalizeHeader(header) || `col_${i}`;
+    const occurrence = (keyOccurrences.get(baseKey) ?? 0) + 1;
+    keyOccurrences.set(baseKey, occurrence);
+    // TradingView frequently exports several plots with the same title
+    // (Upper, Lower, Basis, etc.). Preserve every positional column instead
+    // of letting duplicate normalized keys overwrite one another.
+    const key = occurrence === 1 ? baseKey : `${baseKey}__${occurrence}`;
     let type: ColumnDef["type"];
     if (i === tsIdx) {
       type = "time";

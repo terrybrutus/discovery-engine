@@ -6,17 +6,24 @@ import type { Dataset, IndicatorDefinition } from "@/types";
 const MODEL = "gemini-3.5-flash-lite";
 const INPUT_PRICE_PER_MILLION = 0.3;
 const OUTPUT_PRICE_PER_MILLION = 2.5;
-const MAX_SOURCE_CHARS = 80_000;
+const MAX_SOURCE_CHARS_PER_INDICATOR = 40_000;
+const MAX_TOTAL_SOURCE_CHARS = 120_000;
+
+export interface IndicatorSourceInput {
+  id: string;
+  name: string;
+  source: string;
+}
 
 export interface DefinitionCompilationRequest {
   apiKey: string;
   datasets: Dataset[];
-  pineSource?: string;
+  indicatorSources?: IndicatorSourceInput[];
   userNotes?: string;
 }
 
 export interface DefinitionCompilationResult {
-  definitions: IndicatorDefinition[];
+  proposals: DefinitionMappingProposal[];
   usage: {
     promptTokens: number;
     outputTokens: number;
@@ -25,9 +32,29 @@ export interface DefinitionCompilationResult {
   model: string;
 }
 
+export interface DefinitionMappingProposal {
+  definition: IndicatorDefinition;
+  column: {
+    id: string;
+    label: string;
+    displayLabel: string;
+    position: number;
+    datasets: string[];
+  };
+  assignments: { datasetId: string; columnKey: string }[];
+  indicatorSourceId: string;
+  indicatorSourceName: string;
+  outputName: string;
+  mappingReason: string;
+}
+
 interface ColumnSummary {
+  columnId: string;
   label: string;
+  displayLabel: string;
   normalizedKey: string;
+  columnIndex: number;
+  occurrence: number;
   count: number;
   finiteCount: number;
   uniqueApprox: number;
@@ -36,24 +63,62 @@ interface ColumnSummary {
   mean: number | null;
   standardDeviation: number | null;
   datasets: string[];
+  assignments: { datasetId: string; columnKey: string }[];
 }
 
 function summarizeColumns(datasets: Dataset[]): ColumnSummary[] {
   const grouped = new Map<
     string,
-    { label: string; key: string; values: number[]; datasets: Set<string> }
+    {
+      columnId: string;
+      label: string;
+      displayLabel: string;
+      key: string;
+      columnIndex: number;
+      occurrence: number;
+      values: number[];
+      datasets: Set<string>;
+      assignments: { datasetId: string; columnKey: string }[];
+    }
   >();
   for (const dataset of datasets) {
+    const totalByLabel = new Map<string, number>();
     for (const column of dataset.columns) {
+      const label = column.label.trim().toLowerCase();
+      totalByLabel.set(label, (totalByLabel.get(label) ?? 0) + 1);
+    }
+    const seenByLabel = new Map<string, number>();
+    for (
+      let columnIndex = 0;
+      columnIndex < dataset.columns.length;
+      columnIndex++
+    ) {
+      const column = dataset.columns[columnIndex];
       if (column.type !== "numeric") continue;
       const values = dataset.columnValues?.[column.key];
       if (!values) continue;
-      const groupKey = column.label.trim().toLowerCase();
+      const normalizedLabel = column.label.trim().toLowerCase();
+      const occurrence = (seenByLabel.get(normalizedLabel) ?? 0) + 1;
+      seenByLabel.set(normalizedLabel, occurrence);
+      const duplicated = (totalByLabel.get(normalizedLabel) ?? 0) > 1;
+      const displayLabel = duplicated
+        ? `${column.label} #${occurrence}`
+        : column.label;
+      const columnId = `column-${columnIndex + 1}:${column.key}`;
+      // Position is deliberately part of the request identity. If the chart
+      // order changes, the next compile is a fresh rematch rather than a
+      // silent reuse of an old positional assignment.
+      const groupKey = `${columnIndex}:${column.key}:${normalizedLabel}`;
       const group = grouped.get(groupKey) ?? {
+        columnId,
         label: column.label,
+        displayLabel,
         key: column.key,
+        columnIndex,
+        occurrence,
         values: [],
         datasets: new Set<string>(),
+        assignments: [],
       };
       // Summary statistics do not need every row. A deterministic stride
       // bounds memory and prevents raw research histories reaching the model.
@@ -62,6 +127,10 @@ function summarizeColumns(datasets: Dataset[]): ColumnSummary[] {
         if (Number.isFinite(values[index])) group.values.push(values[index]);
       }
       group.datasets.add(dataset.label ?? dataset.name);
+      group.assignments.push({
+        datasetId: dataset.id,
+        columnKey: column.key,
+      });
       grouped.set(groupKey, group);
     }
   }
@@ -77,8 +146,12 @@ function summarizeColumns(datasets: Dataset[]): ColumnSummary[] {
           ) / count
         : null;
     return {
+      columnId: group.columnId,
       label: group.label,
+      displayLabel: group.displayLabel,
       normalizedKey: group.key,
+      columnIndex: group.columnIndex,
+      occurrence: group.occurrence,
       count,
       finiteCount: count,
       uniqueApprox: new Set(group.values.slice(0, 5_000)).size,
@@ -87,6 +160,7 @@ function summarizeColumns(datasets: Dataset[]): ColumnSummary[] {
       mean,
       standardDeviation: variance == null ? null : Math.sqrt(variance),
       datasets: [...group.datasets],
+      assignments: group.assignments,
     };
   });
 }
@@ -111,7 +185,7 @@ function estimateCost(promptTokens: number, outputTokens: number): number {
 
 export function previewDefinitionCompilation(
   datasets: Dataset[],
-  pineSource = "",
+  indicatorSources: IndicatorSourceInput[] = [],
   userNotes = "",
 ): {
   columns: number;
@@ -119,9 +193,16 @@ export function previewDefinitionCompilation(
   worstCaseCostUsd: number;
 } {
   const summaries = summarizeColumns(datasets);
+  const sourceChars = indicatorSources.reduce(
+    (sum, indicator) =>
+      sum +
+      Math.min(indicator.source.length, MAX_SOURCE_CHARS_PER_INDICATOR) +
+      indicator.name.length,
+    0,
+  );
   const chars =
     JSON.stringify(summaries).length +
-    Math.min(pineSource.length, MAX_SOURCE_CHARS) +
+    Math.min(sourceChars, MAX_TOTAL_SOURCE_CHARS) +
     userNotes.length +
     6_000;
   const approximateInputTokens = Math.ceil(chars / 4);
@@ -143,6 +224,10 @@ function responseSchema() {
         items: {
           type: "OBJECT",
           properties: {
+            columnId: { type: "STRING" },
+            indicatorSourceId: { type: "STRING" },
+            outputName: { type: "STRING" },
+            mappingReason: { type: "STRING" },
             canonicalName: { type: "STRING" },
             description: { type: "STRING" },
             role: {
@@ -224,6 +309,10 @@ function responseSchema() {
             confidence: { type: "NUMBER" },
           },
           required: [
+            "columnId",
+            "indicatorSourceId",
+            "outputName",
+            "mappingReason",
             "canonicalName",
             "description",
             "role",
@@ -250,22 +339,56 @@ export async function compileDefinitionsWithGemini(
   if (summaries.length === 0) {
     throw new Error("No imported numeric columns are available to define.");
   }
-  const pineSource = (request.pineSource ?? "").slice(0, MAX_SOURCE_CHARS);
+  const indicatorSources = (request.indicatorSources ?? [])
+    .filter((indicator) => indicator.source.trim())
+    .map((indicator) => ({
+      id: indicator.id,
+      name: indicator.name.trim() || "Unnamed indicator",
+      source: indicator.source.slice(0, MAX_SOURCE_CHARS_PER_INDICATOR),
+    }));
+  let remainingSourceChars = MAX_TOTAL_SOURCE_CHARS;
+  const boundedSources = indicatorSources.map((indicator) => {
+    const source = indicator.source.slice(0, remainingSourceChars);
+    remainingSourceChars -= source.length;
+    return { ...indicator, source };
+  });
   const signature = sourceHash(
     JSON.stringify(
-      summaries.map(({ label, normalizedKey }) => ({ label, normalizedKey })),
-    ) + pineSource,
+      summaries.map(({ columnId, label, normalizedKey }) => ({
+        columnId,
+        label,
+        normalizedKey,
+      })),
+    ) + JSON.stringify(boundedSources),
   );
+  const promptSummaries = summaries.map(
+    ({ assignments: _assignments, ...summary }) => summary,
+  );
+  const sourcePayload =
+    boundedSources.length > 0
+      ? boundedSources.map((indicator) => ({
+          id: indicator.id,
+          userLabel: indicator.name,
+          source: indicator.source,
+        }))
+      : [];
   const prompt = [
     "You are compiling deterministic metadata for a quantitative trading research engine.",
-    "Create exactly one definition for every supplied column. Do not invent columns or trading profitability.",
+    "Create exactly one definition for every supplied columnId. Never merge columns merely because their visible labels match.",
+    "Map each column to the indicator source that most plausibly produced it. Use the indicator declaration/short title, input defaults, calculations, variable names, plot titles, plot order, column position, and sampled value relationships.",
+    'Set indicatorSourceId to one supplied source id, or exactly "unmapped" when the evidence is insufficient.',
+    "Changing chart order can change column position, so this request is a fresh mapping. Do not assume a saved positional mapping.",
+    "canonicalName must be specific enough to distinguish repeated outputs, for example 'BB 20/2 Upper' versus 'Keltner 20/1.5 Upper'.",
+    "outputName is the source variable or plot title that produced the field. mappingReason briefly states the concrete evidence.",
     "Classify what each output represents and which generic relationships are mathematically valid.",
     "Absolute price-valued series and cumulative totals must be marked non-stationary.",
     "Bands must be identified as upper-band, lower-band, or basis so the engine can compare width and nesting.",
     "Oscillators should support pivots/divergence when meaningful. Discrete signals should be binary-event.",
     "The output is metadata only; calculations remain deterministic in the application.",
-    `Column summaries (sampled statistics only, never raw rows): ${JSON.stringify(summaries)}`,
-    pineSource ? `Optional Pine/source definition:\n${pineSource}` : "",
+    `Unique positional column summaries (sampled statistics only, never raw rows): ${JSON.stringify(promptSummaries)}`,
+    sourcePayload.length
+      ? `Separate indicator sources with stable request ids:\n${JSON.stringify(sourcePayload)}`
+      : "No indicator source was supplied. Use unmapped and infer only from each unique column summary.",
     request.userNotes ? `User notes:\n${request.userNotes}` : "",
   ]
     .filter(Boolean)
@@ -309,55 +432,105 @@ export async function compileDefinitionsWithGemini(
   const text = payload.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!text) throw new Error("Gemini returned no definition payload.");
   const decoded = JSON.parse(text) as {
-    definitions?: Partial<IndicatorDefinition>[];
+    definitions?: (Partial<IndicatorDefinition> & {
+      columnId?: string;
+      indicatorSourceId?: string;
+      outputName?: string;
+      mappingReason?: string;
+    })[];
   };
   if (!Array.isArray(decoded.definitions)) {
     throw new Error("Gemini response did not contain a definitions array.");
   }
   const timestamp = Date.now();
-  const definitions = decoded.definitions.map((definition, index) =>
-    validateDefinition({
-      ...definition,
-      id: `ai.${(
-        definition.canonicalName ??
-        summaries[index]?.label ??
-        "series"
-      )
+  const decodedByColumnId = new Map(
+    decoded.definitions
+      .filter((definition) => definition.columnId)
+      .map((definition) => [definition.columnId as string, definition]),
+  );
+  const proposals = summaries.map((summary, index) => {
+    const proposed =
+      decodedByColumnId.get(summary.columnId) ??
+      decoded.definitions?.[index] ??
+      {};
+    const indicatorSourceId = boundedSources.some(
+      (source) => source.id === proposed.indicatorSourceId,
+    )
+      ? (proposed.indicatorSourceId as string)
+      : "unmapped";
+    const indicatorSourceName =
+      boundedSources.find((source) => source.id === indicatorSourceId)?.name ??
+      "Unmapped";
+    const canonicalName =
+      proposed.canonicalName ?? summary.displayLabel ?? "Imported series";
+    const definition = validateDefinition({
+      ...proposed,
+      id: `ai.${canonicalName
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, ".")
-        .replace(/^\.|\.$/g, "")}.${signature}`,
+        .replace(/^\.|\.$/g, "")}.${summary.columnId
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ".")}.${signature}`,
       version: 1,
-      canonicalName:
-        definition.canonicalName ??
-        summaries[index]?.label ??
-        "Imported series",
+      canonicalName,
       description:
-        definition.description ?? "AI-assisted imported indicator definition.",
-      role: definition.role ?? "generic-series",
-      semantic: definition.semantic ?? "generic",
-      units: definition.units ?? "unknown",
-      stationary: definition.stationary ?? false,
-      supportedRelationships: definition.supportedRelationships ?? [
+        proposed.description ?? "AI-assisted imported indicator definition.",
+      role: proposed.role ?? "generic-series",
+      semantic: proposed.semantic ?? "generic",
+      units: proposed.units ?? "unknown",
+      parameters: {
+        ...(proposed.parameters ?? {}),
+        indicatorSourceId,
+        columnIdentity: summary.columnId,
+        outputName: proposed.outputName ?? summary.label,
+      },
+      stationary: proposed.stationary ?? false,
+      supportedRelationships: proposed.supportedRelationships ?? [
         "percentile",
         "direction",
         "slope",
       ],
-      aliases: definition.aliases?.length
-        ? definition.aliases
-        : [summaries[index]?.label ?? definition.canonicalName ?? "series"],
+      // A positional duplicate alias such as "Upper #2" is safe. The raw
+      // ambiguous alias "Upper" is intentionally not stored for duplicates.
+      aliases: [
+        summary.columnId,
+        summary.displayLabel,
+        ...(proposed.aliases ?? []).filter(
+          (alias) =>
+            alias.trim().toLowerCase() !== summary.label.trim().toLowerCase() ||
+            summary.displayLabel === summary.label,
+        ),
+      ],
       source: "ai",
-      confidence: definition.confidence ?? 0.7,
+      confidence: proposed.confidence ?? 0.7,
       sourceHash: signature,
       reviewed: false,
       updatedAt: timestamp,
-    } as IndicatorDefinition),
-  );
+    } as IndicatorDefinition);
+    return {
+      definition,
+      column: {
+        id: summary.columnId,
+        label: summary.label,
+        displayLabel: summary.displayLabel,
+        position: summary.columnIndex + 1,
+        datasets: summary.datasets,
+      },
+      assignments: summary.assignments,
+      indicatorSourceId,
+      indicatorSourceName,
+      outputName: proposed.outputName ?? summary.label,
+      mappingReason:
+        proposed.mappingReason ??
+        "No source-specific mapping explanation was returned.",
+    };
+  });
   const promptTokens =
     payload.usageMetadata?.promptTokenCount ?? Math.ceil(prompt.length / 4);
   const outputTokens =
     payload.usageMetadata?.candidatesTokenCount ?? Math.ceil(text.length / 4);
   return {
-    definitions,
+    proposals,
     usage: {
       promptTokens,
       outputTokens,

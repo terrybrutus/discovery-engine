@@ -386,7 +386,7 @@ export function resolveDefinition(
   values: number[],
 ): IndicatorDefinition {
   const normalizedLabel = normalized(label);
-  const storedMatch = readCustomDefinitions()
+  const storedMatches = readCustomDefinitions()
     .filter(
       (definition) =>
         definition.reviewed &&
@@ -394,7 +394,11 @@ export function resolveDefinition(
           (candidate) => normalized(candidate) === normalizedLabel,
         ),
     )
-    .sort((a, b) => b.updatedAt - a.updatedAt)[0];
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+  // Never guess between several saved definitions that share an ambiguous
+  // export label such as "Upper". Duplicate fields require an explicit
+  // source mapping for the current upload.
+  const storedMatch = storedMatches.length === 1 ? storedMatches[0] : undefined;
 
   return (
     (definitionId ? getDefinition(definitionId) : undefined) ??

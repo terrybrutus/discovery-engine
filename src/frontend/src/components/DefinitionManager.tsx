@@ -10,14 +10,34 @@ import {
   saveDefinition,
 } from "@/lib/definitionRegistry";
 import {
+  type DefinitionMappingProposal,
+  type IndicatorSourceInput,
   compileDefinitionsWithGemini,
   previewDefinitionCompilation,
 } from "@/lib/geminiDefinitionCompiler";
 import { useEngineStore } from "@/store/engineStore";
 import type { IndicatorDefinition } from "@/types";
 import { useActor, useInternetIdentity } from "@caffeineai/core-infrastructure";
-import { BrainCircuit, Download, KeyRound, Upload } from "lucide-react";
+import {
+  BrainCircuit,
+  Download,
+  FileCode2,
+  KeyRound,
+  Plus,
+  Trash2,
+  Upload,
+} from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+
+function newIndicatorSource(): IndicatorSourceInput {
+  return {
+    id: `indicator-${Date.now().toString(36)}-${Math.random()
+      .toString(36)
+      .slice(2, 7)}`,
+    name: "",
+    source: "",
+  };
+}
 
 export function DefinitionManager() {
   const { actor } = useActor<Backend>(createActor);
@@ -30,11 +50,13 @@ export function DefinitionManager() {
     (state) => state.generateFeaturesAction,
   );
   const [apiKey, setApiKey] = useState("");
-  const [pineSource, setPineSource] = useState("");
+  const [indicatorSources, setIndicatorSources] = useState<
+    IndicatorSourceInput[]
+  >([]);
   const [notes, setNotes] = useState("");
   const [running, setRunning] = useState(false);
   const [message, setMessage] = useState("");
-  const [proposals, setProposals] = useState<IndicatorDefinition[]>([]);
+  const [proposals, setProposals] = useState<DefinitionMappingProposal[]>([]);
   const [definitions, setDefinitions] = useState<IndicatorDefinition[]>(() =>
     listDefinitions(),
   );
@@ -45,8 +67,8 @@ export function DefinitionManager() {
     [datasets, selectedDatasetIds],
   );
   const preview = useMemo(
-    () => previewDefinitionCompilation(selected, pineSource, notes),
-    [selected, pineSource, notes],
+    () => previewDefinitionCompilation(selected, indicatorSources, notes),
+    [selected, indicatorSources, notes],
   );
 
   const persistRegistry = async (): Promise<void> => {
@@ -88,12 +110,12 @@ export function DefinitionManager() {
       const result = await compileDefinitionsWithGemini({
         apiKey,
         datasets: selected,
-        pineSource,
+        indicatorSources,
         userNotes: notes,
       });
-      setProposals(result.definitions);
+      setProposals(result.proposals);
       setMessage(
-        `Generated ${result.definitions.length} proposals for review. Estimated request cost: $${result.usage.estimatedCostUsd.toFixed(4)}.`,
+        `Generated ${result.proposals.length} positional mappings for review. Estimated request cost: $${result.usage.estimatedCostUsd.toFixed(4)}.`,
       );
     } catch (error) {
       setMessage(
@@ -107,18 +129,24 @@ export function DefinitionManager() {
   };
 
   const acceptProposals = async () => {
-    const accepted = proposals.map((definition) =>
-      saveDefinition({ ...definition, reviewed: true, updatedAt: Date.now() }),
+    const accepted = proposals.map((proposal) =>
+      saveDefinition({
+        ...proposal.definition,
+        reviewed: true,
+        updatedAt: Date.now(),
+      }),
     );
-    for (const dataset of selected) {
-      for (const column of dataset.columns) {
-        const match = accepted.find((definition) =>
-          definition.aliases.some(
-            (alias) =>
-              alias.trim().toLowerCase() === column.label.trim().toLowerCase(),
-          ),
+    for (let index = 0; index < proposals.length; index++) {
+      const proposal = proposals[index];
+      const definition = accepted[index];
+      for (const assignment of proposal.assignments) {
+        const dataset = selected.find(
+          (candidate) => candidate.id === assignment.datasetId,
         );
-        if (match) column.definitionId = match.id;
+        const column = dataset?.columns.find(
+          (candidate) => candidate.key === assignment.columnKey,
+        );
+        if (column) column.definitionId = definition.id;
       }
     }
     setDefinitions(listDefinitions());
@@ -138,6 +166,28 @@ export function DefinitionManager() {
           : "Definitions saved locally, but identity sync failed.",
       );
     }
+  };
+
+  const updateSource = (
+    id: string,
+    patch: Partial<IndicatorSourceInput>,
+  ): void => {
+    setIndicatorSources((current) =>
+      current.map((source) =>
+        source.id === id ? { ...source, ...patch } : source,
+      ),
+    );
+  };
+
+  const updateProposal = (
+    index: number,
+    patch: Partial<DefinitionMappingProposal>,
+  ): void => {
+    setProposals((current) =>
+      current.map((proposal, proposalIndex) =>
+        proposalIndex === index ? { ...proposal, ...patch } : proposal,
+      ),
+    );
   };
 
   const discardProposals = () => {
@@ -191,9 +241,9 @@ export function DefinitionManager() {
           <p className="mt-1 max-w-3xl text-xs leading-relaxed text-muted-foreground">
             Deterministic definitions control how every uploaded field is
             transformed. Gemini can classify unfamiliar outputs from column
-            summaries, Pine source, and your notes. It never receives the
-            uploaded row history and it never calculates or validates a trading
-            edge.
+            summaries, separate indicator sources, and your notes. It never
+            receives the uploaded row history and it never calculates or
+            validates a trading edge.
           </p>
         </div>
         <div className="flex gap-2">
@@ -260,17 +310,85 @@ export function DefinitionManager() {
         </div>
       </div>
 
-      <div className="mt-3">
-        <label className="mb-1 block text-xs font-medium" htmlFor="pine-source">
-          Pine/indicator source (optional)
-        </label>
-        <Textarea
-          id="pine-source"
-          value={pineSource}
-          onChange={(event) => setPineSource(event.target.value)}
-          placeholder="Paste source only when the column names and statistics do not explain the outputs."
-          className="min-h-24 font-mono text-xs"
-        />
+      <div className="mt-4 rounded-md border border-border bg-background/30 p-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-1.5 text-xs font-medium">
+              <FileCode2 className="size-3.5 text-primary" />
+              Indicator sources (optional)
+            </div>
+            <p className="mt-1 max-w-3xl text-[11px] leading-relaxed text-muted-foreground">
+              Add each Pine indicator separately. Gemini uses its declaration,
+              inputs, calculations, variables, and plot order to map duplicate
+              table columns. Sources remain visible and independently editable.
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() =>
+              setIndicatorSources((current) => [
+                ...current,
+                newIndicatorSource(),
+              ])
+            }
+          >
+            <Plus className="size-3.5" /> Add indicator source
+          </Button>
+        </div>
+
+        {indicatorSources.length === 0 ? (
+          <p className="mt-3 rounded border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">
+            No source added. Gemini can still classify unique positional columns
+            from their names and value summaries.
+          </p>
+        ) : (
+          <div className="mt-3 space-y-3">
+            {indicatorSources.map((indicator, index) => (
+              <div
+                key={indicator.id}
+                className="rounded border border-border bg-card p-3"
+              >
+                <div className="mb-2 flex items-center gap-2">
+                  <span className="font-mono text-[10px] text-muted-foreground">
+                    {String(index + 1).padStart(2, "0")}
+                  </span>
+                  <Input
+                    value={indicator.name}
+                    onChange={(event) =>
+                      updateSource(indicator.id, { name: event.target.value })
+                    }
+                    placeholder="Indicator label, e.g. Keltner 20 / 1.5"
+                    aria-label={`Indicator ${index + 1} label`}
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    onClick={() =>
+                      setIndicatorSources((current) =>
+                        current.filter((source) => source.id !== indicator.id),
+                      )
+                    }
+                    aria-label={`Remove indicator ${index + 1}`}
+                  >
+                    <Trash2 className="size-4" />
+                  </Button>
+                </div>
+                <Textarea
+                  value={indicator.source}
+                  onChange={(event) =>
+                    updateSource(indicator.id, { source: event.target.value })
+                  }
+                  placeholder="Paste this indicator's Pine source here."
+                  aria-label={`Indicator ${index + 1} Pine source`}
+                  className="min-h-32 font-mono text-xs"
+                />
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-3">
@@ -284,31 +402,107 @@ export function DefinitionManager() {
         </Button>
         <span className="text-[11px] text-muted-foreground">
           Approx. {preview.approximateInputTokens.toLocaleString()} input tokens
+          · {indicatorSources.filter((source) => source.source.trim()).length}{" "}
+          source
+          {indicatorSources.filter((source) => source.source.trim()).length ===
+          1
+            ? ""
+            : "s"}{" "}
           · conservative request estimate ${preview.worstCaseCostUsd.toFixed(4)}
         </span>
       </div>
       {proposals.length > 0 ? (
         <div className="mt-4 rounded border border-border bg-muted/20 p-3">
-          <div className="mb-2 text-xs font-medium">
-            Review proposed definitions
+          <div className="mb-1 text-xs font-medium">
+            Review proposed source-to-column mappings
           </div>
-          <div className="max-h-52 space-y-2 overflow-y-auto">
-            {proposals.map((definition) => (
+          <p className="mb-3 text-[11px] text-muted-foreground">
+            Duplicate names remain separate by column position. Correct the
+            indicator or stored definition name before saving whenever Gemini is
+            uncertain.
+          </p>
+          <div className="max-h-[32rem] space-y-2 overflow-y-auto">
+            {proposals.map((proposal, index) => (
               <div
-                key={definition.id}
-                className="flex flex-wrap items-center justify-between gap-2 rounded border border-border bg-background p-2 text-xs"
+                key={proposal.column.id}
+                className="grid gap-2 rounded border border-border bg-background p-3 text-xs lg:grid-cols-[minmax(9rem,0.8fr)_minmax(12rem,1fr)_minmax(12rem,1fr)]"
               >
                 <div>
-                  <div className="font-medium">{definition.canonicalName}</div>
-                  <div className="text-muted-foreground">
-                    {definition.role} · {definition.units} ·{" "}
-                    {Math.round(definition.confidence * 100)}% classification
-                    confidence
+                  <div className="font-medium">
+                    {proposal.column.displayLabel}
+                  </div>
+                  <div className="mt-0.5 font-mono text-[10px] text-muted-foreground">
+                    Column {proposal.column.position} ·{" "}
+                    {proposal.column.datasets.length} dataset
+                    {proposal.column.datasets.length === 1 ? "" : "s"}
                   </div>
                 </div>
-                <div className="text-[10px] text-muted-foreground">
-                  {definition.supportedRelationships.length} supported
-                  relationships
+                <div>
+                  <label
+                    className="mb-1 block text-[10px] uppercase tracking-wide text-muted-foreground"
+                    htmlFor={`mapping-source-${index}`}
+                  >
+                    Indicator source
+                  </label>
+                  <select
+                    id={`mapping-source-${index}`}
+                    value={proposal.indicatorSourceId}
+                    onChange={(event) => {
+                      const source = indicatorSources.find(
+                        (candidate) => candidate.id === event.target.value,
+                      );
+                      const indicatorSourceId = source?.id ?? "unmapped";
+                      updateProposal(index, {
+                        indicatorSourceId,
+                        indicatorSourceName: source?.name || "Unmapped",
+                        definition: {
+                          ...proposal.definition,
+                          parameters: {
+                            ...(proposal.definition.parameters ?? {}),
+                            indicatorSourceId,
+                          },
+                        },
+                      });
+                    }}
+                    className="h-9 w-full rounded-md border border-border bg-background px-2 text-xs text-foreground"
+                  >
+                    <option value="unmapped">Unmapped / uncertain</option>
+                    {indicatorSources
+                      .filter((source) => source.source.trim())
+                      .map((source, sourceIndex) => (
+                        <option key={source.id} value={source.id}>
+                          {source.name.trim() || `Indicator ${sourceIndex + 1}`}
+                        </option>
+                      ))}
+                  </select>
+                  <p className="mt-1 line-clamp-2 text-[10px] text-muted-foreground">
+                    {proposal.mappingReason}
+                  </p>
+                </div>
+                <div>
+                  <label
+                    className="mb-1 block text-[10px] uppercase tracking-wide text-muted-foreground"
+                    htmlFor={`mapping-name-${index}`}
+                  >
+                    Stored definition name
+                  </label>
+                  <Input
+                    id={`mapping-name-${index}`}
+                    value={proposal.definition.canonicalName}
+                    onChange={(event) =>
+                      updateProposal(index, {
+                        definition: {
+                          ...proposal.definition,
+                          canonicalName: event.target.value,
+                        },
+                      })
+                    }
+                  />
+                  <div className="mt-1 text-[10px] text-muted-foreground">
+                    {proposal.definition.role} · {proposal.definition.units} ·{" "}
+                    {Math.round(proposal.definition.confidence * 100)}%
+                    confidence
+                  </div>
                 </div>
               </div>
             ))}
