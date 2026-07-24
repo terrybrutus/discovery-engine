@@ -159,7 +159,7 @@ export function generateReport(
     id: "dataset",
     title: "Dataset Overview",
     paragraphs: [
-      `Analyzed ${datasetsForReport.length} selected dataset${datasetsForReport.length === 1 ? "" : "s"} containing ${totalBars.toLocaleString()} total bars. Included: ${datasetNames}. The active discovery dataset was "${dataset.label ?? dataset.name}" (${dataset.timeframe}, ${fmtDate(dataset.dateRange.start)} to ${fmtDate(dataset.dateRange.end)}).`,
+      `Used ${datasetsForReport.length} selected dataset${datasetsForReport.length === 1 ? "" : "s"} containing ${totalBars.toLocaleString()} source bars. Included: ${datasetNames}. "${dataset.label ?? dataset.name}" (${dataset.timeframe}, ${fmtDate(dataset.dateRange.start)} to ${fmtDate(dataset.dateRange.end)}) supplied the prediction outcomes; every other selected dataset supplied its latest causally completed state at each target decision time.`,
     ],
   };
 
@@ -186,7 +186,7 @@ export function generateReport(
     id: "discovery",
     title: "Discovery Summary",
     paragraphs: [
-      "Tested combinations of 2-6 conditions across the enabled features and ranked them by statistical strength (sample size, win rate, and margin over random).",
+      "Tested combinations of 2-6 conditions across timeframe-aware structure, session/level, sequence, imported-signal, and causally aligned multi-timeframe features. Patterns were ranked by sample size, directional win rate, and lift over their matching unconditional baseline.",
       `Found ${patterns.length} patterns meeting the minimum sample size and win-rate thresholds. The top ${topPatterns.length} are reported below.`,
     ],
   };

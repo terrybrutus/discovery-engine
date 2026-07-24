@@ -76,7 +76,7 @@ const BB_LOCATION_BUCKETS = [
 const CONSEC_DIR_BUCKETS = ["Down x3+", "Down", "Neutral", "Up", "Up x3+"];
 
 /** Category used for features derived from uploaded custom columns. */
-export const CUSTOM_COLUMNS_CATEGORY = "Custom Columns";
+export const CUSTOM_COLUMNS_CATEGORY = "Imported Signals";
 
 function f(
   id: string,
@@ -230,6 +230,53 @@ export function generateFeatures(
       { buckets: ["Up", "Down", "Doji"] },
     ),
 
+    // ---- Market Structure ----
+    f(
+      "pivot_event",
+      "Confirmed Pivot Event",
+      "Market Structure",
+      "A causally confirmed swing high or swing low. The event is recorded only after two later bars confirm it.",
+      "categorical",
+      "Pivot at t-2 is confirmed at t when its high/low exceeds the two bars on either side",
+      { buckets: ["None", "Swing High", "Swing Low", "Both"] },
+    ),
+    f(
+      "swing_sequence",
+      "Swing Sequence",
+      "Market Structure",
+      "Whether the latest confirmed swing is a higher high, lower high, higher low, or lower low.",
+      "categorical",
+      "Latest confirmed swing compared with the previous confirmed swing of the same type",
+      { buckets: ["None", "HH", "LH", "HL", "LL"] },
+    ),
+    f(
+      "structure_state",
+      "Market Structure State",
+      "Market Structure",
+      "Persistent structure inferred from the latest confirmed high and low sequence.",
+      "categorical",
+      "Bullish for HH+HL, Bearish for LH+LL, otherwise Range / Transition",
+      { buckets: ["Bullish", "Bearish", "Range / Transition"] },
+    ),
+    f(
+      "break_of_structure",
+      "Break of Structure",
+      "Market Structure",
+      "Whether the close broke the latest confirmed swing high or swing low.",
+      "categorical",
+      "Bullish BOS when close crosses above last confirmed swing high; Bearish BOS below last confirmed swing low",
+      { buckets: ["None", "Bullish BOS", "Bearish BOS"] },
+    ),
+    f(
+      "liquidity_sweep",
+      "Liquidity Sweep",
+      "Market Structure",
+      "Whether price traded through a confirmed swing level but closed back on the original side.",
+      "categorical",
+      "High sweep when high > prior swing high and close < it; low sweep when low < prior swing low and close > it",
+      { buckets: ["None", "Swept High", "Swept Low"] },
+    ),
+
     // ---- VWAP ----
     f(
       "vwap_distance_pct",
@@ -346,8 +393,80 @@ export function generateFeatures(
       "Location",
       "Where the close sits within the previous hour's high-low range (0-100).",
       "numeric",
-      "Prev Hour Location = (close - prev_hour_low) / (prev_hour_high - prev_hour_low) * 100 over the prior 12 bars (1h on 5m)",
+      "Prev Hour Location = (close - prior_60m_low) / (prior_60m_high - prior_60m_low) * 100 using timestamps",
       { range: [0, 100] },
+    ),
+
+    // ---- Levels & Sessions ----
+    f(
+      "prev_day_level_state",
+      "Previous Day Level State",
+      "Levels & Sessions",
+      "Whether price is above the prior-day high, inside its range, or below the prior-day low.",
+      "categorical",
+      "close compared with previous session high and low",
+      { buckets: ["Above PDH", "Inside Previous Day", "Below PDL"] },
+    ),
+    f(
+      "prev_day_level_event",
+      "Previous Day Level Event",
+      "Levels & Sessions",
+      "Break, reclaim, rejection, or sweep behavior around previous-day high and low.",
+      "categorical",
+      "Current OHLC relationship to previous-day high/low and the prior close",
+      {
+        buckets: [
+          "None",
+          "Broke PDH",
+          "Broke PDL",
+          "Reclaimed PDH",
+          "Reclaimed PDL",
+          "Swept PDH",
+          "Swept PDL",
+        ],
+      },
+    ),
+    f(
+      "distance_to_pdh_atr",
+      "Distance to Previous Day High (ATR)",
+      "Levels & Sessions",
+      "Distance from close to the previous-day high in ATR units.",
+      "numeric",
+      "(close - previous_day_high) / ATR(14)",
+    ),
+    f(
+      "distance_to_pdl_atr",
+      "Distance to Previous Day Low (ATR)",
+      "Levels & Sessions",
+      "Distance from close to the previous-day low in ATR units.",
+      "numeric",
+      "(close - previous_day_low) / ATR(14)",
+    ),
+    f(
+      "box_position",
+      "Rolling Box Position",
+      "Levels & Sessions",
+      "Where close sits within the prior 20-bar high-low box.",
+      "numeric",
+      "(close - prior_20_bar_low) / (prior_20_bar_high - prior_20_bar_low) * 100",
+      { range: [0, 100] },
+    ),
+    f(
+      "box_event",
+      "Rolling Box Event",
+      "Levels & Sessions",
+      "Breakout, failed breakout, or inside state relative to the prior 20-bar box.",
+      "categorical",
+      "Current OHLC and close compared with the prior 20-bar high-low box",
+      {
+        buckets: [
+          "Inside Box",
+          "Breakout Up",
+          "Breakout Down",
+          "Failed Breakout Up",
+          "Failed Breakout Down",
+        ],
+      },
     ),
 
     // ---- Gap ----
@@ -377,7 +496,7 @@ export function generateFeatures(
       "Opening Range",
       "Size of the first 30-minute opening range as a percent of price.",
       "numeric",
-      "Opening Range Size % = (OR_high - OR_low) / close * 100, where OR = high/low of the first 6 bars (30 min on 5m)",
+      "Opening Range Size % = (OR_high - OR_low) / close * 100, where OR uses the first 30 elapsed minutes of the session",
       { range: [0, 5] },
     ),
     f(
@@ -409,6 +528,32 @@ export function generateFeatures(
       "Bollinger Bandwidth = (upper_band - lower_band) / SMA(20) * 100, where bands = SMA(20) +/- 2*stdev(close, 20)",
       { range: [0, 20] },
     ),
+    f(
+      "bb_percent_b",
+      "Bollinger %B",
+      "Bollinger",
+      "Price position inside or outside the bands on a relative scale (0 = lower band, 100 = upper band).",
+      "numeric",
+      "(close - lower_band) / (upper_band - lower_band) * 100",
+    ),
+    f(
+      "bb_bandwidth_percentile",
+      "Bollinger Bandwidth Percentile",
+      "Bollinger",
+      "Where current bandwidth ranks within its own recent history.",
+      "numeric",
+      "Rolling percentile of Bollinger Bandwidth over 100 observations",
+      { range: [0, 100] },
+    ),
+    f(
+      "bb_regime",
+      "Bollinger Regime",
+      "Bollinger",
+      "Whether the bands are compressed, normal, or expanding relative to recent history.",
+      "categorical",
+      "Squeeze below bandwidth p20, Expansion above p80, otherwise Normal",
+      { buckets: ["Squeeze", "Normal", "Expansion"] },
+    ),
 
     // ---- Trend ----
     f(
@@ -436,6 +581,34 @@ export function generateFeatures(
       "categorical",
       "Consecutive Direction = count of consecutive same-direction closes bucketed 'Up'/'Up x3+' (>=3) or 'Down'/'Down x3+' (>=3), 'Neutral' if count == 1",
       { buckets: CONSEC_DIR_BUCKETS },
+    ),
+
+    // ---- Sequences ----
+    f(
+      "structure_event_sequence",
+      "Recent Structure Sequence",
+      "Sequences",
+      "The ordered pair of the two most recent confirmed structural events.",
+      "categorical",
+      "previous confirmed HH/LH/HL/LL event followed by the latest event",
+    ),
+    f(
+      "sweep_reclaim_sequence",
+      "Sweep → Reclaim Sequence",
+      "Sequences",
+      "A previous-day or swing-level sweep followed by a reclaim within five bars.",
+      "categorical",
+      "Level sweep event followed by a close back through the swept level within five bars",
+      { buckets: ["None", "High Sweep → Reclaim", "Low Sweep → Reclaim"] },
+    ),
+    f(
+      "break_retest_sequence",
+      "Break → Retest Sequence",
+      "Sequences",
+      "A box or structure break followed by a retest within five bars.",
+      "categorical",
+      "Breakout event followed by a return to the broken level within five bars",
+      { buckets: ["None", "Bullish Break → Retest", "Bearish Break → Retest"] },
     ),
   ];
 
@@ -583,14 +756,18 @@ export function computeFeatureValues(
   // Rolling closes for SMA/stdev (Bollinger, trend).
   const closes = bars.map((b) => b.close);
 
-  // Opening range per day (first 30 min = 6 bars of 5m).
-  const OR_LOOKBACK_BARS = 6;
+  // Opening range per day, measured by elapsed time rather than a fixed
+  // number of bars so 1m/5m/15m/60m files do not describe different periods.
+  const OPENING_RANGE_MS = 30 * 60 * 1000;
   const orHighByBar = new Array<number | null>(bars.length).fill(null);
   const orLowByBar = new Array<number | null>(bars.length).fill(null);
   const orSizeByBar = new Array<number | null>(bars.length).fill(null);
   for (const day of dayIndex) {
-    const orEnd = Math.min(day.start + OR_LOOKBACK_BARS - 1, day.end);
-    if (orEnd <= day.start) continue;
+    const cutoff = bars[day.start].timestamp + OPENING_RANGE_MS;
+    let orEnd = day.start;
+    while (orEnd + 1 <= day.end && bars[orEnd + 1].timestamp < cutoff) {
+      orEnd++;
+    }
     let hi = Number.NEGATIVE_INFINITY;
     let lo = Number.POSITIVE_INFINITY;
     for (let i = day.start; i <= orEnd; i++) {
@@ -617,8 +794,21 @@ export function computeFeatureValues(
     }
   }
 
-  // Previous-hour aggregates (12 bars of 5m = 1h).
-  const HOUR_BARS = 12;
+  const HOUR_MS = 60 * 60 * 1000;
+  const bandwidthHistory: number[] = [];
+  let lastSwingHigh: number | null = null;
+  let previousSwingHigh: number | null = null;
+  let lastSwingLow: number | null = null;
+  let previousSwingLow: number | null = null;
+  let lastHighKind: "HH" | "LH" | null = null;
+  let lastLowKind: "HL" | "LL" | null = null;
+  const structureEvents: string[] = [];
+  let recentHighSweep = -100;
+  let recentLowSweep = -100;
+  let recentBullBreak = -100;
+  let recentBearBreak = -100;
+  let recentBullBreakLevel: number | null = null;
+  let recentBearBreakLevel: number | null = null;
 
   for (let i = 0; i < bars.length; i++) {
     const bar = bars[i];
@@ -635,6 +825,84 @@ export function computeFeatureValues(
     matrix.candle_range[i] = range;
     matrix.candle_direction[i] =
       body < range * 0.05 ? "Doji" : bar.close >= bar.open ? "Up" : "Down";
+
+    // ---- Market Structure (causal pivot confirmation) ----
+    matrix.pivot_event[i] = "None";
+    matrix.swing_sequence[i] = "None";
+    matrix.break_of_structure[i] = "None";
+    matrix.liquidity_sweep[i] = "None";
+    if (i >= 4) {
+      const pivotIndex = i - 2;
+      const pivot = bars[pivotIndex];
+      const isSwingHigh =
+        pivot.high > bars[pivotIndex - 1].high &&
+        pivot.high >= bars[pivotIndex - 2].high &&
+        pivot.high > bars[pivotIndex + 1].high &&
+        pivot.high >= bars[pivotIndex + 2].high;
+      const isSwingLow =
+        pivot.low < bars[pivotIndex - 1].low &&
+        pivot.low <= bars[pivotIndex - 2].low &&
+        pivot.low < bars[pivotIndex + 1].low &&
+        pivot.low <= bars[pivotIndex + 2].low;
+      if (isSwingHigh) {
+        previousSwingHigh = lastSwingHigh;
+        lastSwingHigh = pivot.high;
+        lastHighKind =
+          previousSwingHigh == null || pivot.high > previousSwingHigh
+            ? "HH"
+            : "LH";
+        matrix.swing_sequence[i] = lastHighKind;
+        structureEvents.push(lastHighKind);
+      }
+      if (isSwingLow) {
+        previousSwingLow = lastSwingLow;
+        lastSwingLow = pivot.low;
+        lastLowKind =
+          previousSwingLow == null || pivot.low > previousSwingLow
+            ? "HL"
+            : "LL";
+        matrix.swing_sequence[i] = lastLowKind;
+        structureEvents.push(lastLowKind);
+      }
+      matrix.pivot_event[i] =
+        isSwingHigh && isSwingLow
+          ? "Both"
+          : isSwingHigh
+            ? "Swing High"
+            : isSwingLow
+              ? "Swing Low"
+              : "None";
+    }
+    matrix.structure_state[i] =
+      lastHighKind === "HH" && lastLowKind === "HL"
+        ? "Bullish"
+        : lastHighKind === "LH" && lastLowKind === "LL"
+          ? "Bearish"
+          : "Range / Transition";
+    if (i > 0 && lastSwingHigh != null) {
+      if (bars[i - 1].close <= lastSwingHigh && bar.close > lastSwingHigh) {
+        matrix.break_of_structure[i] = "Bullish BOS";
+        recentBullBreak = i;
+        recentBullBreakLevel = lastSwingHigh;
+      } else if (bar.high > lastSwingHigh && bar.close < lastSwingHigh) {
+        matrix.liquidity_sweep[i] = "Swept High";
+        recentHighSweep = i;
+      }
+    }
+    if (i > 0 && lastSwingLow != null) {
+      if (bars[i - 1].close >= lastSwingLow && bar.close < lastSwingLow) {
+        matrix.break_of_structure[i] = "Bearish BOS";
+        recentBearBreak = i;
+        recentBearBreakLevel = lastSwingLow;
+      } else if (bar.low < lastSwingLow && bar.close > lastSwingLow) {
+        matrix.liquidity_sweep[i] = "Swept Low";
+        recentLowSweep = i;
+      }
+    }
+    matrix.structure_event_sequence[i] =
+      structureEvents.length >= 2
+        ? structureEvents.slice(-2).join(" → ")
+        : "None";
 
     // ---- VWAP ----
     const vwap = vwapByBar[i];
@@ -671,10 +939,12 @@ export function computeFeatureValues(
             Math.abs(bar.high - bars[i - 1].close),
             Math.abs(bar.low - bars[i - 1].close),
           );
+    let currentAtr = tr[i];
     if (i >= 14) {
       let atrSum = 0;
       for (let k = i - 13; k <= i; k++) atrSum += tr[k];
       const atr = atrSum / 14;
+      currentAtr = atr;
       const atrHistory: number[] = [];
       for (let k = 14; k <= i; k++) {
         let s = 0;
@@ -697,16 +967,96 @@ export function computeFeatureValues(
       const prev = dayIndex[myDay.dayIdx - 1];
       const prevRange = prev.high - prev.low || 1e-9;
       matrix.prev_day_location[i] = ((bar.close - prev.low) / prevRange) * 100;
+      matrix.prev_day_level_state[i] =
+        bar.close > prev.high
+          ? "Above PDH"
+          : bar.close < prev.low
+            ? "Below PDL"
+            : "Inside Previous Day";
+      matrix.distance_to_pdh_atr[i] =
+        currentAtr > 1e-12 ? (bar.close - prev.high) / currentAtr : undefined;
+      matrix.distance_to_pdl_atr[i] =
+        currentAtr > 1e-12 ? (bar.close - prev.low) / currentAtr : undefined;
+      matrix.prev_day_level_event[i] = "None";
+      if (bar.high > prev.high && bar.close < prev.high) {
+        matrix.prev_day_level_event[i] = "Swept PDH";
+        recentHighSweep = i;
+      } else if (bar.low < prev.low && bar.close > prev.low) {
+        matrix.prev_day_level_event[i] = "Swept PDL";
+        recentLowSweep = i;
+      } else if (
+        i > 0 &&
+        bars[i - 1].close <= prev.high &&
+        bar.close > prev.high
+      ) {
+        matrix.prev_day_level_event[i] = "Broke PDH";
+        recentBullBreak = i;
+        recentBullBreakLevel = prev.high;
+      } else if (
+        i > 0 &&
+        bars[i - 1].close >= prev.low &&
+        bar.close < prev.low
+      ) {
+        matrix.prev_day_level_event[i] = "Broke PDL";
+        recentBearBreak = i;
+        recentBearBreakLevel = prev.low;
+      } else if (
+        i > 0 &&
+        bars[i - 1].close > prev.high &&
+        bar.close <= prev.high
+      ) {
+        matrix.prev_day_level_event[i] = "Reclaimed PDH";
+      } else if (
+        i > 0 &&
+        bars[i - 1].close < prev.low &&
+        bar.close >= prev.low
+      ) {
+        matrix.prev_day_level_event[i] = "Reclaimed PDL";
+      }
     }
-    if (i >= HOUR_BARS) {
+    if (i > 0) {
+      const windowStart = bar.timestamp - HOUR_MS;
       let ph = Number.NEGATIVE_INFINITY;
       let pl = Number.POSITIVE_INFINITY;
-      for (let k = i - HOUR_BARS; k < i; k++) {
+      let observations = 0;
+      for (let k = i - 1; k >= 0 && bars[k].timestamp >= windowStart; k--) {
         ph = Math.max(ph, bars[k].high);
         pl = Math.min(pl, bars[k].low);
+        observations++;
       }
-      const pr = ph - pl || 1e-9;
-      matrix.prev_hour_location[i] = ((bar.close - pl) / pr) * 100;
+      if (observations > 0) {
+        const pr = ph - pl || 1e-9;
+        matrix.prev_hour_location[i] = ((bar.close - pl) / pr) * 100;
+      }
+    }
+
+    // ---- Rolling price box ----
+    if (i >= 20) {
+      let boxHigh = Number.NEGATIVE_INFINITY;
+      let boxLow = Number.POSITIVE_INFINITY;
+      for (let k = i - 20; k < i; k++) {
+        boxHigh = Math.max(boxHigh, bars[k].high);
+        boxLow = Math.min(boxLow, bars[k].low);
+      }
+      const boxRange = boxHigh - boxLow || 1e-9;
+      matrix.box_position[i] = ((bar.close - boxLow) / boxRange) * 100;
+      matrix.box_event[i] =
+        bar.high > boxHigh && bar.close <= boxHigh
+          ? "Failed Breakout Up"
+          : bar.low < boxLow && bar.close >= boxLow
+            ? "Failed Breakout Down"
+            : bar.close > boxHigh
+              ? "Breakout Up"
+              : bar.close < boxLow
+                ? "Breakout Down"
+                : "Inside Box";
+      if (matrix.box_event[i] === "Breakout Up") {
+        recentBullBreak = i;
+        recentBullBreakLevel = boxHigh;
+      } else if (matrix.box_event[i] === "Breakout Down") {
+        recentBearBreak = i;
+        recentBearBreakLevel = boxLow;
+      }
     }
 
     // ---- Gap ----
@@ -751,6 +1101,24 @@ export function computeFeatureValues(
         else matrix.bb_location[i] = "Below Lower";
         matrix.bb_bandwidth[i] =
           sma20 > 0 ? ((upper - lower) / sma20) * 100 : 0;
+        matrix.bb_percent_b[i] =
+          upper !== lower ? ((bar.close - lower) / (upper - lower)) * 100 : 50;
+        const bandwidth = matrix.bb_bandwidth[i];
+        if (typeof bandwidth === "number") {
+          bandwidthHistory.push(bandwidth);
+          const recentBandwidth = bandwidthHistory.slice(-100);
+          matrix.bb_bandwidth_percentile[i] = percentile(
+            bandwidth,
+            recentBandwidth,
+          );
+          const bandwidthPct = matrix.bb_bandwidth_percentile[i];
+          matrix.bb_regime[i] =
+            typeof bandwidthPct === "number" && bandwidthPct <= 20
+              ? "Squeeze"
+              : typeof bandwidthPct === "number" && bandwidthPct >= 80
+                ? "Expansion"
+                : "Normal";
+        }
       }
     }
 
@@ -789,7 +1157,7 @@ export function computeFeatureValues(
     // Consecutive direction.
     if (i >= 1) {
       let count = 1;
-      let dir = closes[i] >= closes[i - 1] ? 1 : -1;
+      const dir = closes[i] >= closes[i - 1] ? 1 : -1;
       for (let k = i - 1; k > 0; k--) {
         const d = closes[k] >= closes[k - 1] ? 1 : -1;
         if (d === dir) count++;
@@ -801,6 +1169,43 @@ export function computeFeatureValues(
         matrix.consecutive_direction[i] = count >= 3 ? "Down x3+" : "Down";
       }
       if (count === 1) matrix.consecutive_direction[i] = "Neutral";
+    }
+
+    // ---- Ordered event sequences ----
+    matrix.sweep_reclaim_sequence[i] = "None";
+    if (
+      i - recentHighSweep > 0 &&
+      i - recentHighSweep <= 5 &&
+      (matrix.prev_day_level_event[i] === "Reclaimed PDH" ||
+        (lastSwingHigh != null && bar.close > lastSwingHigh))
+    ) {
+      matrix.sweep_reclaim_sequence[i] = "High Sweep → Reclaim";
+    } else if (
+      i - recentLowSweep > 0 &&
+      i - recentLowSweep <= 5 &&
+      (matrix.prev_day_level_event[i] === "Reclaimed PDL" ||
+        (lastSwingLow != null && bar.close > lastSwingLow))
+    ) {
+      matrix.sweep_reclaim_sequence[i] = "Low Sweep → Reclaim";
+    }
+
+    matrix.break_retest_sequence[i] = "None";
+    if (
+      i - recentBullBreak > 0 &&
+      i - recentBullBreak <= 5 &&
+      recentBullBreakLevel != null &&
+      bar.low <= recentBullBreakLevel &&
+      bar.close >= recentBullBreakLevel
+    ) {
+      matrix.break_retest_sequence[i] = "Bullish Break → Retest";
+    } else if (
+      i - recentBearBreak > 0 &&
+      i - recentBearBreak <= 5 &&
+      recentBearBreakLevel != null &&
+      bar.high >= recentBearBreakLevel &&
+      bar.close <= recentBearBreakLevel
+    ) {
+      matrix.break_retest_sequence[i] = "Bearish Break → Retest";
     }
   }
 

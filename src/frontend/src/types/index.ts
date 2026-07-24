@@ -19,6 +19,13 @@ export interface DateRange {
 }
 
 export type ColumnType = "time" | "ohlcv" | "numeric" | "unknown";
+export type ColumnSemantic =
+  | "price-level"
+  | "binary-event"
+  | "oscillator"
+  | "cumulative"
+  | "percentage"
+  | "generic";
 
 /**
  * A detected column in an uploaded dataset.
@@ -30,6 +37,8 @@ export interface ColumnDef {
   key: string;
   label: string;
   type: ColumnType;
+  /** Inferred meaning used to transform imported values into stationary features. */
+  semantic?: ColumnSemantic;
 }
 
 export interface Dataset {
@@ -70,16 +79,21 @@ export type FeatureCategory = string;
  */
 export const BUILTIN_CATEGORIES = [
   "Candle Structure",
+  "Market Structure",
+  "Sequences",
   "VWAP",
   "Time",
   "Calendar",
   "Volume",
   "Volatility",
   "Location",
+  "Levels & Sessions",
   "Gap",
   "Opening Range",
   "Bollinger",
   "Trend",
+  "Imported Signals",
+  "Multi-Timeframe",
 ] as const;
 
 export type BuiltinCategory = (typeof BUILTIN_CATEGORIES)[number];
@@ -101,6 +115,11 @@ export interface Feature {
   formula?: string;
   /** Whether this feature is built-in or derived from an uploaded column. */
   source?: "builtin" | "custom";
+  /** Meaning of an imported value after semantic inference. */
+  semantic?: ColumnSemantic | "derived" | "multi-timeframe";
+  /** Dataset/timeframe supplying an aligned context feature. */
+  originDatasetId?: string;
+  originTimeframe?: Timeframe;
 }
 
 /** A single computed value for one bar / one feature. */

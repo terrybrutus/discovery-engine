@@ -7,7 +7,7 @@ import { Progress } from "@/components/ui/progress";
 import { useEngineStore } from "@/store/engineStore";
 import type { Feature, FeatureCategory } from "@/types";
 import { BarChart3, Database, ListTree, Sparkles, Zap } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 
 /**
  * Feature Generator tab — the first step in the four-tab flow.
@@ -28,6 +28,10 @@ export default function FeatureGeneratorPage() {
   const generateFeaturesAction = useEngineStore(
     (s) => s.generateFeaturesAction,
   );
+  const setFeatureEnabled = useEngineStore((s) => s.setFeatureEnabled);
+  const setFeatureCategoryEnabled = useEngineStore(
+    (s) => s.setFeatureCategoryEnabled,
+  );
 
   const featuresGenerated = completedSteps.has("featuresGenerated");
   const includedDatasets =
@@ -41,36 +45,26 @@ export default function FeatureGeneratorPage() {
     0,
   );
 
-  // Local enabled map — seeded from feature.enabled defaults, mutated by
-  // toggles in the catalog. The store's `features` array is the source of
-  // truth for which features exist; this map tracks which the user wants
-  // active for pattern testing in later tabs.
-  const [enabledMap, setEnabledMap] = useState<Record<string, boolean>>({});
-
-  // Seed the enabled map whenever features change (e.g. after generation).
+  // The catalog reflects the store directly so these switches control the
+  // exact feature set supplied to discovery, including matching features in
+  // the selected context datasets.
   const effectiveEnabledMap = useMemo(() => {
-    const out: Record<string, boolean> = { ...enabledMap };
+    const out: Record<string, boolean> = {};
     for (const f of features) {
-      if (!(f.id in out)) out[f.id] = f.enabled;
+      out[f.id] = f.enabled;
     }
     return out;
-  }, [features, enabledMap]);
+  }, [features]);
 
   const handleToggle = (featureId: string, enabled: boolean) => {
-    setEnabledMap((prev) => ({ ...prev, [featureId]: enabled }));
+    setFeatureEnabled(featureId, enabled);
   };
 
   const handleSetCategoryEnabled = (
     category: FeatureCategory,
     enabled: boolean,
   ) => {
-    setEnabledMap((prev) => {
-      const next = { ...prev };
-      for (const f of features) {
-        if (f.category === category) next[f.id] = enabled;
-      }
-      return next;
-    });
+    setFeatureCategoryEnabled(category, enabled);
   };
 
   // ---- No dataset loaded ----
@@ -147,11 +141,12 @@ export default function FeatureGeneratorPage() {
                 {includedBars.toLocaleString()}
               </span>{" "}
               bars in {includedDatasets.length} selected dataset
-              {includedDatasets.length === 1 ? "" : "s"}, across 11 categories —
-              candle structure, VWAP, time, calendar, volume, volatility,
-              location, gaps, opening range, Bollinger bands, and trend. Each
-              dataset receives its own aligned feature matrix for discovery and
-              validation.
+              {includedDatasets.length === 1 ? "" : "s"}. It builds
+              timeframe-aware market structure, pivots, HH/HL/LH/LL sequences,
+              previous-session levels, rolling boxes, relative Bollinger/VWAP
+              context, and semantic transformations for imported columns. During
+              discovery, completed higher- and lower-timeframe states are
+              causally aligned to the active prediction target.
             </p>
           </div>
           <Button

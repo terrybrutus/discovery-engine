@@ -7,9 +7,13 @@ import {
   computeFeatureValues,
   generateFeatures,
 } from "@/lib/features";
-import type { CustomColumn } from "@/lib/features";
+import {
+  buildMultiTimeframeResearchSpace,
+  datasetIntervalMs,
+} from "@/lib/multiTimeframe";
 import { generateReport } from "@/lib/report";
 import { getSampleDataset } from "@/lib/sampleData";
+import { deriveSemanticColumnFeatures } from "@/lib/semanticColumns";
 import { validatePatterns } from "@/lib/validation";
 import type { SurvivalDataset } from "@/lib/validation";
 import { BUILTIN_CATEGORIES } from "@/types";
@@ -81,6 +85,11 @@ interface EngineState {
   /** Generated feature catalogs and matrices retained for every dataset. */
   featuresByDataset: Record<string, Feature[]>;
   featureValuesByDataset: Record<string, FeatureMatrix>;
+  /** Causally aligned design matrix actually supplied to discovery. */
+  researchFeatures: Feature[];
+  researchFeatureValues: FeatureMatrix | null;
+  researchContextDatasetIds: string[];
+  researchTotalBars: number;
   patterns: Pattern[];
   validationResults: ValidationResult[];
   /** Cross-timeframe correlation results across multiple datasets. */
@@ -127,6 +136,11 @@ interface EngineState {
   loadDataset: (dataset: Dataset) => void;
   loadSampleDataset: () => void;
   generateFeaturesAction: () => void;
+  setFeatureEnabled: (featureId: string, enabled: boolean) => void;
+  setFeatureCategoryEnabled: (
+    category: FeatureCategory,
+    enabled: boolean,
+  ) => void;
   runDiscoveryAction: () => Promise<void>;
   validateAction: () => void;
   generateReportAction: () => void;
@@ -174,33 +188,19 @@ function buildDatasetFeatures(
   dataset: Dataset,
   overrides: FeatureOverrides,
 ): { features: Feature[]; matrix: FeatureMatrix } {
-  const customColumns: CustomColumn[] = (dataset.columns ?? [])
-    .filter((column) => column.type === "numeric")
-    .map((column) => ({ label: column.label, key: column.key }));
-  const features = generateFeatures(dataset.bars, customColumns, overrides);
-  const matrix = computeFeatureValues(
-    dataset.bars,
-    features,
-    dataset.columnValues ?? {},
-  );
+  const features = generateFeatures(dataset.bars, [], overrides);
+  const matrix = computeFeatureValues(dataset.bars, features);
+  const semantic = deriveSemanticColumnFeatures(dataset);
+  for (const column of dataset.columns) {
+    column.semantic = semantic.semantics[column.key] ?? column.semantic;
+  }
+  features.push(...semantic.features);
+  Object.assign(matrix, semantic.matrix);
   return { features, matrix };
 }
 
-function timeframeMinutes(timeframe: Dataset["timeframe"]): number {
-  switch (timeframe) {
-    case "1m":
-      return 1;
-    case "5m":
-      return 5;
-    case "15m":
-      return 15;
-    case "1h":
-      return 60;
-    case "1d":
-      return 1440;
-    default:
-      return 1;
-  }
+function timeframeMinutes(dataset: Dataset): number {
+  return datasetIntervalMs(dataset) / 60_000;
 }
 
 export const useEngineStore = create<EngineState>((set, get) => ({
@@ -212,6 +212,10 @@ export const useEngineStore = create<EngineState>((set, get) => ({
   featureValues: null,
   featuresByDataset: {},
   featureValuesByDataset: {},
+  researchFeatures: [],
+  researchFeatureValues: null,
+  researchContextDatasetIds: [],
+  researchTotalBars: 0,
   patterns: [],
   validationResults: [],
   crossReferenceResults: [],
@@ -242,6 +246,10 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         dataset,
         features: [],
         featureValues: null,
+        researchFeatures: [],
+        researchFeatureValues: null,
+        researchContextDatasetIds: [],
+        researchTotalBars: 0,
         patterns: [],
         validationResults: [],
         crossReferenceResults: [],
@@ -294,6 +302,10 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         dataset,
         features: cachedFeatures,
         featureValues: cachedValues,
+        researchFeatures: [],
+        researchFeatureValues: null,
+        researchContextDatasetIds: [],
+        researchTotalBars: 0,
         patterns: [],
         validationResults: [],
         crossReferenceResults: [],
@@ -316,8 +328,15 @@ export const useEngineStore = create<EngineState>((set, get) => ({
       return {
         activeDatasetId: id,
         dataset,
+        selectedDatasetIds: state.selectedDatasetIds.includes(id)
+          ? state.selectedDatasetIds
+          : [...state.selectedDatasetIds, id],
         features: cachedFeatures,
         featureValues: cachedValues,
+        researchFeatures: [],
+        researchFeatureValues: null,
+        researchContextDatasetIds: [],
+        researchTotalBars: 0,
         patterns: [],
         validationResults: [],
         report: null,
@@ -331,6 +350,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
 
   toggleDatasetSelected: (id) =>
     set((state) => {
+      if (id === state.activeDatasetId) return {};
       const completedSteps = new Set<CompletedStep>(["dataLoaded"]);
       if (state.features.length > 0 && state.featureValues) {
         completedSteps.add("featuresGenerated");
@@ -408,6 +428,13 @@ export const useEngineStore = create<EngineState>((set, get) => ({
           completedSteps: completed,
           // Clear downstream results since features changed.
           patterns: [],
+          researchFeatures: [],
+          researchFeatureValues: null,
+          researchContextDatasetIds: [],
+          researchTotalBars: included.reduce(
+            (sum, candidate) => sum + candidate.bars.length,
+            0,
+          ),
           validationResults: [],
           crossReferenceResults: [],
           report: null,
@@ -422,9 +449,75 @@ export const useEngineStore = create<EngineState>((set, get) => ({
     }, 10);
   },
 
+  setFeatureEnabled: (featureId, enabled) => {
+    set((state) => {
+      const update = (catalog: Feature[]) =>
+        catalog.map((feature) =>
+          feature.id === featureId ? { ...feature, enabled } : feature,
+        );
+      return {
+        features: update(state.features),
+        featuresByDataset: Object.fromEntries(
+          Object.entries(state.featuresByDataset).map(
+            ([datasetId, catalog]) => [datasetId, update(catalog)],
+          ),
+        ),
+        researchFeatures: [],
+        researchFeatureValues: null,
+        researchContextDatasetIds: [],
+        patterns: [],
+        validationResults: [],
+        report: null,
+      };
+    });
+  },
+
+  setFeatureCategoryEnabled: (category, enabled) => {
+    set((state) => {
+      const update = (catalog: Feature[]) =>
+        catalog.map((feature) =>
+          feature.category === category ? { ...feature, enabled } : feature,
+        );
+      return {
+        features: update(state.features),
+        featuresByDataset: Object.fromEntries(
+          Object.entries(state.featuresByDataset).map(
+            ([datasetId, catalog]) => [datasetId, update(catalog)],
+          ),
+        ),
+        researchFeatures: [],
+        researchFeatureValues: null,
+        researchContextDatasetIds: [],
+        patterns: [],
+        validationResults: [],
+        report: null,
+      };
+    });
+  },
+
   runDiscoveryAction: async () => {
-    const { dataset, features, featureValues, discoveryConfig } = get();
+    const {
+      dataset,
+      features,
+      featureValues,
+      discoveryConfig,
+      datasets,
+      selectedDatasetIds,
+      featuresByDataset,
+      featureValuesByDataset,
+    } = get();
     if (!dataset || !features.length || !featureValues) return;
+    const selectedDatasets = datasets.filter(
+      (candidate) =>
+        candidate.id === dataset.id ||
+        selectedDatasetIds.includes(candidate.id),
+    );
+    const research = buildMultiTimeframeResearchSpace(
+      dataset,
+      selectedDatasets,
+      featuresByDataset,
+      featureValuesByDataset,
+    );
 
     cancelFlag = { cancelled: false };
     set({
@@ -432,6 +525,10 @@ export const useEngineStore = create<EngineState>((set, get) => ({
       lastError: null,
       discoveryProgress: { ...DEFAULT_PROGRESS, isRunning: true },
       patterns: [],
+      researchFeatures: research.features,
+      researchFeatureValues: research.matrix,
+      researchContextDatasetIds: research.contextDatasetIds,
+      researchTotalBars: research.totalSourceBars,
     });
 
     try {
@@ -440,8 +537,8 @@ export const useEngineStore = create<EngineState>((set, get) => ({
       // datasets. Any throw here is caught below and resets isComputing.
       const patterns = await runDiscovery(
         dataset.bars,
-        features,
-        featureValues,
+        research.features,
+        research.matrix,
         discoveryConfig,
         (progress) => {
           set({ discoveryProgress: progress });
@@ -460,8 +557,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
 
       const completed = new Set<CompletedStep>(get().completedSteps);
       completed.add("discoveryComplete");
-      const { datasets, selectedDatasetIds, featureValuesByDataset } = get();
-      const activeMinutes = timeframeMinutes(dataset.timeframe);
+      const activeMinutes = timeframeMinutes(dataset);
       const additionalDatasets: SurvivalDataset[] = datasets
         .filter(
           (candidate) =>
@@ -469,21 +565,30 @@ export const useEngineStore = create<EngineState>((set, get) => ({
             selectedDatasetIds.includes(candidate.id) &&
             featureValuesByDataset[candidate.id],
         )
-        .map((candidate) => ({
-          dataset: candidate,
-          matrix: featureValuesByDataset[candidate.id],
-          horizon: Math.max(
-            1,
-            Math.round(
-              (discoveryConfig.horizon * activeMinutes) /
-                timeframeMinutes(candidate.timeframe),
+        .map((candidate) => {
+          const candidateResearch = buildMultiTimeframeResearchSpace(
+            candidate,
+            selectedDatasets,
+            featuresByDataset,
+            featureValuesByDataset,
+            dataset.id,
+          );
+          return {
+            dataset: candidate,
+            matrix: candidateResearch.matrix,
+            horizon: Math.max(
+              1,
+              Math.round(
+                (discoveryConfig.horizon * activeMinutes) /
+                  timeframeMinutes(candidate),
+              ),
             ),
-          ),
-        }));
+          };
+        });
       const validationResults = validatePatterns(
         dataset,
-        features,
-        featureValues,
+        research.features,
+        research.matrix,
         patterns.slice(0, 20),
         additionalDatasets,
       );
@@ -541,6 +646,8 @@ export const useEngineStore = create<EngineState>((set, get) => ({
       featureValuesByDataset,
       patterns,
       discoveryConfig,
+      researchFeatures,
+      researchFeatureValues,
     } = get();
     if (!dataset || !features.length || !featureValues || !patterns.length)
       return;
@@ -548,7 +655,24 @@ export const useEngineStore = create<EngineState>((set, get) => ({
     setTimeout(() => {
       try {
         const topPatterns = patterns.slice(0, 20);
-        const activeMinutes = timeframeMinutes(dataset.timeframe);
+        const selectedDatasets = datasets.filter(
+          (candidate) =>
+            candidate.id === dataset.id ||
+            selectedDatasetIds.includes(candidate.id),
+        );
+        const primaryResearch =
+          researchFeatures.length > 0 && researchFeatureValues
+            ? {
+                features: researchFeatures,
+                matrix: researchFeatureValues,
+              }
+            : buildMultiTimeframeResearchSpace(
+                dataset,
+                selectedDatasets,
+                get().featuresByDataset,
+                featureValuesByDataset,
+              );
+        const activeMinutes = timeframeMinutes(dataset);
         const additionalDatasets: SurvivalDataset[] = datasets
           .filter(
             (candidate) =>
@@ -556,21 +680,30 @@ export const useEngineStore = create<EngineState>((set, get) => ({
               selectedDatasetIds.includes(candidate.id) &&
               featureValuesByDataset[candidate.id],
           )
-          .map((candidate) => ({
-            dataset: candidate,
-            matrix: featureValuesByDataset[candidate.id],
-            horizon: Math.max(
-              1,
-              Math.round(
-                (discoveryConfig.horizon * activeMinutes) /
-                  timeframeMinutes(candidate.timeframe),
+          .map((candidate) => {
+            const candidateResearch = buildMultiTimeframeResearchSpace(
+              candidate,
+              selectedDatasets,
+              get().featuresByDataset,
+              featureValuesByDataset,
+              dataset.id,
+            );
+            return {
+              dataset: candidate,
+              matrix: candidateResearch.matrix,
+              horizon: Math.max(
+                1,
+                Math.round(
+                  (discoveryConfig.horizon * activeMinutes) /
+                    timeframeMinutes(candidate),
+                ),
               ),
-            ),
-          }));
+            };
+          });
         const results = validatePatterns(
           dataset,
-          features,
-          featureValues,
+          primaryResearch.features,
+          primaryResearch.matrix,
           topPatterns,
           additionalDatasets,
         );
@@ -617,12 +750,13 @@ export const useEngineStore = create<EngineState>((set, get) => ({
       crossReferenceResults,
       datasets,
       selectedDatasetIds,
+      researchFeatures,
     } = get();
     if (!dataset || !features.length) return;
     try {
       const report = generateReport(
         dataset,
-        features,
+        researchFeatures.length > 0 ? researchFeatures : features,
         patterns,
         validationResults,
         crossReferenceResults,
@@ -699,6 +833,10 @@ export const useEngineStore = create<EngineState>((set, get) => ({
       featureValues: null,
       featuresByDataset: {},
       featureValuesByDataset: {},
+      researchFeatures: [],
+      researchFeatureValues: null,
+      researchContextDatasetIds: [],
+      researchTotalBars: 0,
       patterns: [],
       validationResults: [],
       crossReferenceResults: [],
@@ -957,6 +1095,10 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         featureValues: null,
         featuresByDataset: {},
         featureValuesByDataset: {},
+        researchFeatures: [],
+        researchFeatureValues: null,
+        researchContextDatasetIds: [],
+        researchTotalBars: 0,
         patterns: restoredPatterns,
         validationResults: restoredValidationResults,
         report: restoredReport,

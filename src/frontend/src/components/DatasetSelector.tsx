@@ -18,8 +18,8 @@ interface DatasetSelectorProps {
 /**
  * Compact list of all loaded datasets with the active one highlighted.
  * Lets the user switch the active dataset directly from the discovery
- * page. Includes a help line clarifying that discovery runs against one
- * dataset at a time while cross-reference uses multiple.
+ * page. The active dataset supplies prediction outcomes; every checked
+ * dataset contributes causally aligned context to the same discovery matrix.
  *
  * This component is presentational — it does not touch the store. The
  * parent wires `datasets`, `activeDatasetId`, and `onSelect` (typically
@@ -41,7 +41,7 @@ export function DatasetSelector({
         <div className="flex items-center gap-2">
           <Layers className="size-4 text-primary" aria-hidden="true" />
           <h2 className="font-display text-sm font-semibold text-foreground">
-            Active dataset
+            Prediction target & context
           </h2>
         </div>
         <p
@@ -65,7 +65,7 @@ export function DatasetSelector({
         <div className="flex items-center gap-2">
           <Layers className="size-4 text-primary" aria-hidden="true" />
           <h2 className="font-display text-sm font-semibold text-foreground">
-            Active dataset
+            Prediction target & context
           </h2>
         </div>
         <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
@@ -96,8 +96,13 @@ export function DatasetSelector({
                 <input
                   type="checkbox"
                   checked={selectedDatasetIds.includes(ds.id)}
+                  disabled={isActive}
                   onChange={() => onToggleSelected(ds.id)}
-                  aria-label={`Include ${label} in multi-timeframe analysis`}
+                  aria-label={
+                    isActive
+                      ? `${label} is required as the prediction target`
+                      : `Include ${label} in multi-timeframe analysis`
+                  }
                   className="ml-3 size-4 shrink-0 accent-[oklch(var(--primary))]"
                 />
               ) : null}
@@ -141,8 +146,9 @@ export function DatasetSelector({
           aria-hidden="true"
         />
         <p className="text-xs leading-relaxed text-muted-foreground">
-          The highlighted dataset supplies the base patterns. Checked datasets
-          are automatically cross-referenced during the same discovery run.
+          The highlighted dataset supplies the future price outcomes. Every
+          checked dataset contributes its latest completed timeframe state as a
+          condition—never future bars.
         </p>
       </div>
     </div>

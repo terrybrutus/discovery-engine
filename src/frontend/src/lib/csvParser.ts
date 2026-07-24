@@ -130,7 +130,7 @@ function buildColumns(
   headers: string[],
   tsIdx: number,
   ohlcvIndices: Set<number>,
-  sampleRow: string[] | null,
+  sampleRows: string[][],
 ): { originalColumns: string[]; columns: ColumnDef[] } {
   const originalColumns = headers.slice();
   const columns: ColumnDef[] = headers.map((header, i) => {
@@ -140,9 +140,14 @@ function buildColumns(
       type = "time";
     } else if (ohlcvIndices.has(i)) {
       type = "ohlcv";
-    } else if (sampleRow) {
-      const v = parseNumber(sampleRow[i] ?? "");
-      type = v == null ? "unknown" : "numeric";
+    } else if (sampleRows.length > 0) {
+      // Indicators commonly begin with a warm-up region of blank/NaN values.
+      // Inspect a window instead of only the first data row so valid imported
+      // signals are not incorrectly discarded.
+      const hasNumericValue = sampleRows.some(
+        (row) => parseNumber(row[i] ?? "") != null,
+      );
+      type = hasNumericValue ? "numeric" : "unknown";
     } else {
       type = "numeric";
     }
@@ -229,12 +234,12 @@ function buildDatasetFromRows(rows: string[][], name: string): ParseResult {
     };
   }
 
-  const sampleRow = rows[1] ?? null;
+  const sampleRows = rows.slice(1, 201);
   const { originalColumns, columns } = buildColumns(
     headers,
     tsIdx,
     ohlcvIndices,
-    sampleRow,
+    sampleRows,
   );
 
   const bars: OHLCVBar[] = [];

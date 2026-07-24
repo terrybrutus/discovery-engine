@@ -60,8 +60,9 @@ const YIELD_EVERY = 200;
  * directly from `bars`. Non-OHLCV columns (custom indicators like
  * "Smoothed %R", "BB Basis", "Upper BB") are read from
  * `dataset.columnValues[normalizedKey]`, which csvParser populates for
- * every non-time numeric column. If columnValues is missing the key, we
- * fall back to close (with a console warning) so alignment still works.
+ * every non-time numeric column. If a requested column is absent, that
+ * dataset/column pair is skipped; substituting close would fabricate a
+ * relationship that the uploaded data never contained.
  */
 function extractSeries(dataset: Dataset, column: string): ColumnSeries | null {
   const key = column.toLowerCase();
@@ -93,10 +94,7 @@ function extractSeries(dataset: Dataset, column: string): ColumnSeries | null {
     if (cv && normKey in cv) {
       customSeries = cv[normKey];
     } else {
-      // Fall back to close as a proxy so alignment still works, but warn.
-      console.warn(
-        `[crossReference] Column "${column}" (normalized "${normKey}") not found in dataset.columnValues; falling back to close.`,
-      );
+      return null;
     }
   }
 
@@ -128,10 +126,7 @@ function extractSeries(dataset: Dataset, column: string): ColumnSeries | null {
           v = b.volume;
           break;
         default:
-          // Should not reach here (customSeries handles non-OHLCV), but
-          // keep close as a final safety fallback.
-          v = b.close;
-          break;
+          return null;
       }
     }
     if (v == null || Number.isNaN(v)) {
@@ -633,9 +628,13 @@ function reconstructEventOrder(
       let collision: { bar: OHLCVBar; labels: string[] } | null = null;
       for (const [, labels] of byCandleTs) {
         if (labels.length >= 2) {
-          const bar = firstTouch.get(labels[0])!;
-          collision = { bar, labels };
-          break;
+          const firstLabel = labels[0];
+          const bar =
+            firstLabel === undefined ? undefined : firstTouch.get(firstLabel);
+          if (bar !== undefined) {
+            collision = { bar, labels };
+            break;
+          }
         }
       }
 
@@ -643,7 +642,10 @@ function reconstructEventOrder(
         // Descend into the colliding candle to try to split the levels.
         const subUnresolved = new Map<string, number>();
         for (const label of collision.labels) {
-          subUnresolved.set(label, unresolved.get(label)!);
+          const columnIndex = unresolved.get(label);
+          if (columnIndex !== undefined) {
+            subUnresolved.set(label, columnIndex);
+          }
         }
         const sub = descend(
           collision.bar,

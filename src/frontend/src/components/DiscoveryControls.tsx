@@ -49,6 +49,22 @@ const DEPTH_OPTIONS: DepthOption[] = DEPTHS.map((d) => ({
 }));
 
 const BUILTIN_SET = new Set<string>(BUILTIN_CATEGORIES);
+const PRIMARY_RESEARCH_LENSES = new Set([
+  "Market Structure",
+  "Sequences",
+  "Levels & Sessions",
+  "Bollinger",
+  "Imported Signals",
+  "Multi-Timeframe",
+]);
+const LENS_DESCRIPTIONS: Record<string, string> = {
+  "Market Structure": "Pivots, HH/HL/LH/LL, BOS, and liquidity sweeps",
+  Sequences: "Ordered sweep/reclaim, break/retest, and swing progressions",
+  "Levels & Sessions": "Previous-day levels, session relationships, and boxes",
+  Bollinger: "%B, relative bandwidth, squeeze, and expansion context",
+  "Imported Signals": "Semantically transformed uploaded indicators and levels",
+  "Multi-Timeframe": "Latest causally completed state from every selected file",
+};
 
 /**
  * MFE/MAE ratio filter mode — three-mode segmented control.
@@ -593,11 +609,11 @@ export function DiscoveryControls({
 
       <Separator />
 
-      {/* ---- Feature categories (dynamic) ---- */}
-      <div className={cn("flex flex-col gap-2", disabled && "opacity-60")}>
+      {/* ---- Research lenses (dynamic) ---- */}
+      <div className={cn("flex flex-col gap-3", disabled && "opacity-60")}>
         <div className="flex items-baseline justify-between">
           <span className="text-sm font-medium text-foreground">
-            Feature categories to include
+            Research lenses
           </span>
           <span
             className="font-mono text-xs tabular-nums text-muted-foreground"
@@ -606,39 +622,84 @@ export function DiscoveryControls({
             {enabledCount}/{categories.length} on
           </span>
         </div>
-        <div className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3">
-          {categories.map((cat) => {
-            const checked = config.enabledCategories.includes(cat);
-            const isCustom = !BUILTIN_SET.has(cat);
-            const checkboxId = `discovery_controls.category.${cat.replace(/\s+/g, "_").toLowerCase()}`;
-            return (
-              <label
-                key={cat}
-                htmlFor={checkboxId}
-                className={cn(
-                  "flex cursor-pointer items-center gap-2 text-sm text-foreground select-none",
-                  disabled && "cursor-not-allowed",
-                )}
-              >
-                <Checkbox
-                  id={checkboxId}
-                  data-ocid={checkboxId}
-                  checked={checked}
-                  disabled={disabled}
-                  onCheckedChange={(v) => toggleCategory(cat, v === true)}
-                />
-                <span className="leading-tight">{cat}</span>
-                {isCustom ? (
-                  <Badge
-                    variant="secondary"
-                    className="h-4 px-1.5 text-[9px] font-medium uppercase tracking-wide"
+        <p className="text-xs text-muted-foreground">
+          These are not a fixed list of indicators. They control which forms of
+          market context the engine may combine.
+        </p>
+        <div className="flex flex-col gap-2">
+          {categories
+            .filter((category) => PRIMARY_RESEARCH_LENSES.has(category))
+            .map((cat) => {
+              const checked = config.enabledCategories.includes(cat);
+              const isCustom = !BUILTIN_SET.has(cat);
+              const checkboxId = `discovery_controls.category.${cat.replace(/\s+/g, "_").toLowerCase()}`;
+              return (
+                <label
+                  key={cat}
+                  htmlFor={checkboxId}
+                  className={cn(
+                    "flex cursor-pointer items-start gap-2 rounded-md border border-border bg-card/50 px-3 py-2 text-sm text-foreground select-none",
+                    disabled && "cursor-not-allowed",
+                  )}
+                >
+                  <Checkbox
+                    id={checkboxId}
+                    data-ocid={checkboxId}
+                    checked={checked}
+                    disabled={disabled}
+                    onCheckedChange={(v) => toggleCategory(cat, v === true)}
+                  />
+                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <span className="leading-tight font-medium">{cat}</span>
+                    <span className="text-[11px] leading-snug text-muted-foreground">
+                      {LENS_DESCRIPTIONS[cat]}
+                    </span>
+                  </span>
+                  {isCustom ? (
+                    <Badge
+                      variant="secondary"
+                      className="h-4 px-1.5 text-[9px] font-medium uppercase tracking-wide"
+                    >
+                      Custom
+                    </Badge>
+                  ) : null}
+                </label>
+              );
+            })}
+        </div>
+        <div>
+          <div className="mb-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            Supporting measurements
+          </div>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+            {categories
+              .filter((category) => !PRIMARY_RESEARCH_LENSES.has(category))
+              .map((cat) => {
+                const checked = config.enabledCategories.includes(cat);
+                const checkboxId = `discovery_controls.category.${cat.replace(/\s+/g, "_").toLowerCase()}`;
+                return (
+                  <label
+                    key={cat}
+                    htmlFor={checkboxId}
+                    className={cn(
+                      "flex cursor-pointer items-center gap-2 text-xs text-foreground select-none",
+                      disabled && "cursor-not-allowed",
+                    )}
                   >
-                    Custom
-                  </Badge>
-                ) : null}
-              </label>
-            );
-          })}
+                    <Checkbox
+                      id={checkboxId}
+                      data-ocid={checkboxId}
+                      checked={checked}
+                      disabled={disabled}
+                      onCheckedChange={(value) =>
+                        toggleCategory(cat, value === true)
+                      }
+                    />
+                    <span className="leading-tight">{cat}</span>
+                  </label>
+                );
+              })}
+          </div>
         </div>
         <div className="flex gap-3 pt-1">
           <button

@@ -127,11 +127,20 @@ export function FeatureStats({
       .filter((f) => enabledMap[f.id] ?? f.enabled)
       .map((f) => {
         const values = featureValues[f.id] ?? [];
-        if (f.type === "categorical" && f.buckets) {
+        if (f.type === "categorical") {
+          const buckets =
+            f.buckets ??
+            Array.from(
+              new Set(
+                values.filter(
+                  (value): value is string => typeof value === "string",
+                ),
+              ),
+            ).sort();
           return {
             feature: f,
             kind: "categorical" as const,
-            distribution: computeCategoricalStats(values, f.buckets),
+            distribution: computeCategoricalStats(values, buckets),
           };
         }
         return {
@@ -159,17 +168,11 @@ export function FeatureStats({
       data-ocid="feature_stats"
       className="grid grid-cols-1 gap-3 lg:grid-cols-2"
     >
-      {stats.map(({ feature, kind }) => {
+      {stats.map((item) => {
+        const { feature, kind } = item;
         const isCategorical = kind === "categorical";
-        const numericStats =
-          kind === "numeric"
-            ? (kind as unknown as { stats: NumericStats | null }).stats
-            : null;
-        const distribution =
-          kind === "categorical"
-            ? (kind as unknown as { distribution: CategoricalStats[] })
-                .distribution
-            : null;
+        const numericStats = kind === "numeric" ? item.stats : null;
+        const distribution = kind === "categorical" ? item.distribution : null;
         return (
           <div
             key={feature.id}

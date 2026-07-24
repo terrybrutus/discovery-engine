@@ -19,14 +19,14 @@ import { toast } from "sonner";
 export function Header() {
   const dataset = useEngineStore((s) => s.dataset);
   const datasets = useEngineStore((s) => s.datasets);
+  const selectedDatasetIds = useEngineStore((s) => s.selectedDatasetIds);
   const loadSampleDataset = useEngineStore((s) => s.loadSampleDataset);
   const [loadModalOpen, setLoadModalOpen] = useState(false);
 
   const total = datasets.length;
-  const totalRows = datasets.reduce(
-    (sum, loadedDataset) => sum + loadedDataset.rowCount,
-    0,
-  );
+  const selectedRows = datasets
+    .filter((loadedDataset) => selectedDatasetIds.includes(loadedDataset.id))
+    .reduce((sum, loadedDataset) => sum + loadedDataset.rowCount, 0);
   const activeName = dataset?.label ?? dataset?.name ?? "";
   const pillLabel =
     total > 1
@@ -36,7 +36,7 @@ export function Header() {
         : "";
 
   const tooltip = dataset
-    ? `${dataset.rowCount.toLocaleString()} bars · ${dataset.timeframe} · ${new Date(dataset.dateRange.start).toLocaleDateString()} → ${new Date(dataset.dateRange.end).toLocaleDateString()}`
+    ? `${selectedDatasetIds.length} selected datasets contribute causally aligned context. "${activeName}" is the prediction target with ${dataset.rowCount.toLocaleString()} outcome bars.`
     : undefined;
 
   return (
@@ -75,8 +75,9 @@ export function Header() {
               {pillLabel}
             </span>
             <span className="hidden text-xs text-muted-foreground tabular-nums md:inline">
-              · {dataset.rowCount.toLocaleString()} active /{" "}
-              {totalRows.toLocaleString()} total bars
+              · {selectedDatasetIds.length}/{total} selected ·{" "}
+              {selectedRows.toLocaleString()} research bars ·{" "}
+              {dataset.rowCount.toLocaleString()} target bars
             </span>
           </div>
         ) : null}

@@ -1,6 +1,5 @@
 import { createActor } from "@/backend";
 import type { Backend } from "@/backend";
-import { CrossReferenceResultsTable } from "@/components/CrossReferencePage";
 import { DatasetSelector } from "@/components/DatasetSelector";
 import { DiscoveryControls } from "@/components/DiscoveryControls";
 import { EmptyState } from "@/components/EmptyState";
@@ -13,9 +12,8 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { Progress } from "@/components/ui/progress";
-import { computeCrossSymbolCoverage } from "@/lib/discovery";
 import { useEngineStore } from "@/store/engineStore";
-import type { Feature, FeatureMatrix, Pattern, SavedRunSummary } from "@/types";
+import type { Pattern, SavedRunSummary } from "@/types";
 import { useActor, useInternetIdentity } from "@caffeineai/core-infrastructure";
 import {
   ChevronDown,
@@ -54,21 +52,17 @@ export default function PatternDiscoveryPage() {
   const completedSteps = useEngineStore((s) => s.completedSteps);
   const setActiveTab = useEngineStore((s) => s.setActiveTab);
   const runDiscoveryAction = useEngineStore((s) => s.runDiscoveryAction);
-  const runCrossReferenceAction = useEngineStore(
-    (s) => s.runCrossReferenceAction,
-  );
-  const crossReferenceResults = useEngineStore((s) => s.crossReferenceResults);
-  const isCrossReferencing = useEngineStore((s) => s.isCrossReferencing);
   const datasets = useEngineStore((s) => s.datasets);
   const activeDatasetId = useEngineStore((s) => s.activeDatasetId);
   const selectedDatasetIds = useEngineStore((s) => s.selectedDatasetIds);
+  const featuresByDataset = useEngineStore((s) => s.featuresByDataset);
   const toggleDatasetSelected = useEngineStore((s) => s.toggleDatasetSelected);
   const setActiveDataset = useEngineStore((s) => s.setActiveDataset);
-  const featureValues = useEngineStore((s) => s.featureValues);
-  const featuresByDataset = useEngineStore((s) => s.featuresByDataset);
-  const featureValuesByDataset = useEngineStore(
-    (s) => s.featureValuesByDataset,
+  const researchContextDatasetIds = useEngineStore(
+    (s) => s.researchContextDatasetIds,
   );
+  const researchTotalBars = useEngineStore((s) => s.researchTotalBars);
+  const researchFeatures = useEngineStore((s) => s.researchFeatures);
 
   // ---- Save / Load Run state ----
   const savedRuns = useEngineStore((s) => s.savedRuns);
@@ -97,33 +91,18 @@ export default function PatternDiscoveryPage() {
   const isRunning = discoveryProgress.isRunning || isComputing;
   const hasRun = completedSteps.has("discoveryComplete");
   const hasResults = patterns.length > 0;
+  const selectedResearchDatasets = datasets.filter(
+    (item) =>
+      item.id === activeDatasetId || selectedDatasetIds.includes(item.id),
+  );
+  const previewContextCount = Math.max(0, selectedResearchDatasets.length - 1);
+  const previewFeatureCount = selectedResearchDatasets.reduce(
+    (sum, item) => sum + (featuresByDataset[item.id]?.length ?? 0),
+    0,
+  );
 
   const handleDiscoveryRun = async (): Promise<void> => {
     await runDiscoveryAction();
-    if (!useEngineStore.getState().completedSteps.has("discoveryComplete")) {
-      return;
-    }
-    const selectedDatasets = datasets.filter((dataset) =>
-      selectedDatasetIds.includes(dataset.id),
-    );
-    if (selectedDatasets.length < 2) return;
-
-    const columns = Array.from(
-      new Set(
-        selectedDatasets.flatMap((dataset) =>
-          dataset.columns
-            .filter(
-              (column) => column.type === "numeric" || column.type === "ohlcv",
-            )
-            .map((column) => column.label),
-        ),
-      ),
-    );
-    if (columns.length === 0) return;
-    await runCrossReferenceAction({
-      datasetIds: selectedDatasets.map((dataset) => dataset.id),
-      columns,
-    });
   };
 
   const pct =
@@ -134,64 +113,7 @@ export default function PatternDiscoveryPage() {
         )
       : 0;
 
-  // ---- Cross-symbol coverage enrichment ----
-  // After a discovery run, if 2+ datasets are loaded, re-evaluate each
-  // discovered pattern across every selected dataset using the retained
-  // per-dataset feature matrices. With one selected dataset, coverage remains
-  // dataset-specific.
-  const enrichedPatterns = useMemo<Pattern[]>(() => {
-    if (patterns.length === 0) return patterns;
-    if (datasets.length < 2) return patterns;
-    if (!activeDatasetId || !features.length || !featureValues) {
-      return patterns;
-    }
-    const featuresPerDataset = new Map<string, Feature[]>();
-    const matrixPerDataset = new Map<string, FeatureMatrix>();
-    for (const datasetId of selectedDatasetIds) {
-      const datasetFeatures = featuresByDataset[datasetId];
-      const datasetMatrix = featureValuesByDataset[datasetId];
-      if (datasetFeatures && datasetMatrix) {
-        featuresPerDataset.set(datasetId, datasetFeatures);
-        matrixPerDataset.set(datasetId, datasetMatrix);
-      }
-    }
-    const minSampleSize =
-      useEngineStore.getState().discoveryConfig.minSampleSize;
-    const out: Pattern[] = [];
-    for (const p of patterns) {
-      // Guard computeCrossSymbolCoverage: if it throws (e.g. undefined
-      // datasets or malformed coverage data), fall back to the unenriched
-      // pattern so the page renders instead of crashing.
-      try {
-        const coverage = computeCrossSymbolCoverage(
-          p,
-          datasets.filter((dataset) => selectedDatasetIds.includes(dataset.id)),
-          featuresPerDataset,
-          matrixPerDataset,
-          minSampleSize,
-          activeDatasetId,
-        );
-        out.push(coverage ? { ...p, coverage } : p);
-      } catch (err) {
-        console.error(
-          "[PatternDiscoveryPage] computeCrossSymbolCoverage failed for pattern",
-          p.id,
-          err,
-        );
-        out.push(p);
-      }
-    }
-    return out;
-  }, [
-    patterns,
-    datasets,
-    activeDatasetId,
-    features,
-    featureValues,
-    featuresByDataset,
-    featureValuesByDataset,
-    selectedDatasetIds,
-  ]);
+  const enrichedPatterns = patterns;
 
   // Toast when a run finishes with results.
   const justFinished = !isRunning && hasRun;
@@ -336,8 +258,8 @@ export default function PatternDiscoveryPage() {
 
         {/* ---- Main column: dataset selector + progress + results ---- */}
         <section className="flex min-w-0 flex-col gap-4">
-          {/* Active dataset selector — lets the user switch which dataset
-              feeds discovery without leaving the page. */}
+          {/* One dataset supplies outcomes; every checked dataset supplies
+              causally aligned context without leaving the page. */}
           <DatasetSelector
             datasets={datasets}
             activeDatasetId={activeDatasetId}
@@ -345,6 +267,48 @@ export default function PatternDiscoveryPage() {
             selectedDatasetIds={selectedDatasetIds}
             onToggleSelected={toggleDatasetSelected}
           />
+
+          <div className="grid gap-3 rounded-md border border-primary/25 bg-primary/5 px-4 py-3 text-sm sm:grid-cols-3">
+            <div>
+              <div className="text-xs text-muted-foreground">
+                Prediction target
+              </div>
+              <div className="font-medium text-foreground">
+                {datasets.find((item) => item.id === activeDatasetId)?.label ??
+                  "Active dataset"}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">
+                Causally aligned context
+              </div>
+              <div className="font-mono text-foreground">
+                {researchContextDatasetIds.length || previewContextCount}{" "}
+                additional dataset
+                {(researchContextDatasetIds.length || previewContextCount) === 1
+                  ? ""
+                  : "s"}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">
+                Research scope
+              </div>
+              <div className="font-mono text-foreground">
+                {(
+                  researchTotalBars ||
+                  datasets
+                    .filter((item) => selectedDatasetIds.includes(item.id))
+                    .reduce((sum, item) => sum + item.rowCount, 0)
+                ).toLocaleString()}{" "}
+                source bars ·{" "}
+                {researchFeatures.length ||
+                  previewFeatureCount ||
+                  features.length}{" "}
+                features
+              </div>
+            </div>
+          </div>
 
           {/* Progress indicator */}
           {isRunning ? (
@@ -448,26 +412,6 @@ export default function PatternDiscoveryPage() {
               actionLabel="Run discovery again"
               onAction={() => void handleDiscoveryRun()}
             />
-          ) : null}
-
-          {isCrossReferencing ? (
-            <Card className="border-primary/30">
-              <CardContent className="px-5 py-4 text-sm text-muted-foreground">
-                Automatically aligning all selected datasets and numeric fields
-                by timestamp…
-              </CardContent>
-            </Card>
-          ) : crossReferenceResults.length > 0 ? (
-            <div className="flex flex-col gap-3">
-              <div className="rounded-md border border-border bg-card px-4 py-2.5 text-sm">
-                <span className="font-mono font-semibold text-primary">
-                  {crossReferenceResults.length.toLocaleString()}
-                </span>{" "}
-                cross-timeframe coincidences found automatically across{" "}
-                {selectedDatasetIds.length} selected datasets.
-              </div>
-              <CrossReferenceResultsTable results={crossReferenceResults} />
-            </div>
           ) : null}
         </section>
       </div>
@@ -739,9 +683,10 @@ function PageHeading() {
           </h1>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          Test thousands of condition combinations across your features and
-          surface the strongest repeating patterns — ranked by win rate, sample
-          size, and confidence.
+          Discover relative price context, market structure, ordered events, and
+          cross-timeframe conditions across every selected dataset. The active
+          file supplies the future outcome; context is aligned without
+          look-ahead.
         </p>
       </div>
     </div>

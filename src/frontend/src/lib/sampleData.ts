@@ -35,6 +35,7 @@ const BARS_PER_DAY = Math.floor(
 ); // 78 bars/day
 
 const TRADING_DAYS = 250;
+let sampleDatasetCounter = 0;
 
 // Skip weekends when generating calendar days.
 function nextTradingDay(d: Date): Date {
@@ -53,6 +54,7 @@ function nextTradingDay(d: Date): Date {
  * Generated at runtime to keep bundle size reasonable.
  */
 export function getSampleDataset(): Dataset {
+  sampleDatasetCounter++;
   const rand = mulberry32(20240117);
   const bars: OHLCVBar[] = [];
 
@@ -159,7 +161,7 @@ export function getSampleDataset(): Dataset {
   ];
 
   return {
-    id: "ds-sample-nq-5m-1yr",
+    id: `ds-sample-nq-5m-1yr-${sampleDatasetCounter}`,
     name: "Sample: NQ Futures (5m, 1yr)",
     label: "Sample: NQ Futures (5m, 1yr)",
     originalColumns,
