@@ -10,11 +10,8 @@ import { toast } from "sonner";
  * opens a modal dialog (LoadDataModal) wrapping the multi-file DataIntake
  * upload flow. The modal closes automatically once a dataset loads.
  *
- * The dataset pill makes clear that multiple files may be loaded even
- * though discovery runs against one at a time. When more than one dataset
- * is loaded, the pill shows a count plus the active dataset name
- * (e.g. "3 datasets · NQ_5m.csv"). When only one is loaded, it shows just
- * the name. The tooltip retains the date range.
+ * The dataset pill reports the unified research universe by default. An
+ * individual filename appears only after explicit-target mode is chosen.
  */
 export function Header() {
   const dataset = useEngineStore((s) => s.dataset);
@@ -31,7 +28,9 @@ export function Header() {
   const activeName = dataset?.label ?? dataset?.name ?? "";
   const pillLabel =
     total > 1
-      ? `${total} datasets · ${activeName}`
+      ? targetMode === "all"
+        ? `${total} datasets · unified research universe`
+        : `${total} datasets · focused: ${activeName}`
       : total === 1
         ? activeName
         : "";

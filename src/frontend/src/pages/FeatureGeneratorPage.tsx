@@ -4,9 +4,19 @@ import { FeatureCatalog } from "@/components/FeatureCatalog";
 import { FeatureStats } from "@/components/FeatureStats";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { buildResearchUniverse } from "@/lib/researchUniverse";
 import { useEngineStore } from "@/store/engineStore";
 import type { Feature, FeatureCategory } from "@/types";
-import { BarChart3, Database, ListTree, Sparkles, Zap } from "lucide-react";
+import {
+  BarChart3,
+  Braces,
+  Database,
+  Files,
+  GitBranch,
+  ListTree,
+  Sparkles,
+  Zap,
+} from "lucide-react";
 import { useMemo } from "react";
 
 /**
@@ -22,8 +32,11 @@ export default function FeatureGeneratorPage() {
   const datasets = useEngineStore((s) => s.datasets);
   const selectedDatasetIds = useEngineStore((s) => s.selectedDatasetIds);
   const features = useEngineStore((s) => s.features);
+  const featuresByDataset = useEngineStore((s) => s.featuresByDataset);
   const featureValues = useEngineStore((s) => s.featureValues);
+  const targetMode = useEngineStore((s) => s.targetMode);
   const isComputing = useEngineStore((s) => s.isComputing);
+  const lastError = useEngineStore((s) => s.lastError);
   const completedSteps = useEngineStore((s) => s.completedSteps);
   const generateFeaturesAction = useEngineStore(
     (s) => s.generateFeaturesAction,
@@ -34,27 +47,42 @@ export default function FeatureGeneratorPage() {
   );
 
   const featuresGenerated = completedSteps.has("featuresGenerated");
-  const includedDatasets =
-    selectedDatasetIds.length > 0
-      ? datasets.filter((candidate) =>
-          selectedDatasetIds.includes(candidate.id),
-        )
-      : datasets;
+  const includedDatasets = datasets.filter((candidate) =>
+    targetMode === "all"
+      ? selectedDatasetIds.includes(candidate.id)
+      : candidate.id === dataset?.id ||
+        selectedDatasetIds.includes(candidate.id),
+  );
   const includedBars = includedDatasets.reduce(
     (sum, candidate) => sum + candidate.rowCount,
     0,
   );
+  const universe = useMemo(
+    () => buildResearchUniverse(includedDatasets),
+    [includedDatasets],
+  );
+  const displayFeatures = useMemo(() => {
+    if (targetMode === "single") return features;
+    const unique = new Map<string, Feature>();
+    for (const candidate of includedDatasets) {
+      for (const feature of featuresByDataset[candidate.id] ?? []) {
+        const key = `${feature.category}:${feature.id}`;
+        if (!unique.has(key)) unique.set(key, feature);
+      }
+    }
+    return [...unique.values()];
+  }, [features, featuresByDataset, includedDatasets, targetMode]);
 
   // The catalog reflects the store directly so these switches control the
   // exact feature set supplied to discovery, including matching features in
   // the selected context datasets.
   const effectiveEnabledMap = useMemo(() => {
     const out: Record<string, boolean> = {};
-    for (const f of features) {
+    for (const f of displayFeatures) {
       out[f.id] = f.enabled;
     }
     return out;
-  }, [features]);
+  }, [displayFeatures]);
 
   const handleToggle = (featureId: string, enabled: boolean) => {
     setFeatureEnabled(featureId, enabled);
@@ -74,8 +102,8 @@ export default function FeatureGeneratorPage() {
         <EmptyState
           icon={Database}
           title="No data loaded yet"
-          description="Load a CSV of OHLCV bars (or use the built-in sample dataset) to start generating features. The engine derives hundreds of measurable characteristics from each bar — candle shape, VWAP distance, time of day, volume behavior, and more."
-          hint="Tip: click “Use Sample” in the header to load one year of realistic intraday data instantly."
+          description="Load a time-indexed CSV with one or more numeric fields. The engine begins empty and activates only measurements supported by the fields you provide."
+          hint="Use Sample is optional and loads a demonstration market dataset; it is not built into your own research."
         />
       </div>
     );
@@ -99,7 +127,7 @@ export default function FeatureGeneratorPage() {
             Generating features…
           </h2>
           <p className="text-sm text-muted-foreground">
-            Deriving hundreds of measurable characteristics from{" "}
+            Deriving schema-supported relationships from{" "}
             <span className="font-mono text-foreground tabular-nums">
               {includedBars.toLocaleString()}
             </span>{" "}
@@ -124,7 +152,7 @@ export default function FeatureGeneratorPage() {
   }
 
   // ---- Not yet generated ----
-  if (!featuresGenerated || features.length === 0) {
+  if (!featuresGenerated || displayFeatures.length === 0) {
     return (
       <div data-ocid="page.feature_generator" className="px-4 py-8 md:px-6">
         <div className="mx-auto flex max-w-2xl flex-col items-center gap-6 py-12 text-center">
@@ -136,19 +164,18 @@ export default function FeatureGeneratorPage() {
               Generate features from your data
             </h2>
             <p className="text-sm leading-relaxed text-muted-foreground">
-              The engine will derive hundreds of measurable features from your{" "}
+              The engine will inspect the fields present across your{" "}
               <span className="font-mono text-foreground tabular-nums">
                 {includedBars.toLocaleString()}
               </span>{" "}
-              bars in {includedDatasets.length} selected dataset
-              {includedDatasets.length === 1 ? "" : "s"}. It builds
-              timeframe-aware market structure, pivots, HH/HL/LH/LL sequences,
-              previous-session levels, rolling boxes, relative Bollinger/VWAP
-              context, and semantic transformations for imported columns. During
-              discovery, completed higher- and lower-timeframe states are
-              causally aligned to every selected outcome pass, including
-              developing higher-timeframe candles reconstructed from completed
-              lower-timeframe intrabars.
+              observations in {includedDatasets.length} selected dataset
+              {includedDatasets.length === 1 ? "" : "s"} and activate only
+              supported relationships. OHLC data can produce structure, pivots,
+              sequences, and relative level context; imported indicators receive
+              semantic, stationary transformations. During discovery, selected
+              timelines are causally aligned, including developing
+              higher-timeframe candles reconstructed from completed
+              same-instrument lower-timeframe observations when available.
             </p>
           </div>
           <Button
@@ -160,14 +187,21 @@ export default function FeatureGeneratorPage() {
             <Sparkles className="size-4" aria-hidden="true" />
             Generate Features
           </Button>
+          {lastError ? (
+            <p className="text-sm text-destructive" role="alert">
+              {lastError}
+            </p>
+          ) : null}
         </div>
       </div>
     );
   }
 
   // ---- Generated: catalog + stats ----
-  const categories = new Set<FeatureCategory>(features.map((f) => f.category));
-  const enabledCount = features.filter(
+  const categories = new Set<FeatureCategory>(
+    displayFeatures.map((f) => f.category),
+  );
+  const enabledCount = displayFeatures.filter(
     (f) => effectiveEnabledMap[f.id] ?? f.enabled,
   ).length;
 
@@ -176,25 +210,81 @@ export default function FeatureGeneratorPage() {
       data-ocid="page.feature_generator"
       className="flex flex-col gap-6 px-4 py-6 md:px-6"
     >
-      {/* Data preview — show the loaded dataset's columns + first rows so
-          the user can verify what was loaded before generating features. */}
-      <section
-        data-ocid="page.feature_generator.data_preview_section"
-        className="flex flex-col gap-2"
-      >
-        <div className="flex items-center gap-2">
-          <Database className="size-4 text-primary" aria-hidden="true" />
-          <h3 className="font-display text-sm font-semibold uppercase tracking-wide text-foreground">
-            Loaded Dataset
-          </h3>
-        </div>
-        <p className="text-xs text-muted-foreground">
-          Preview the first rows of your dataset with original column names
-          preserved. Custom indicator columns (non-OHLCV) are shown alongside
-          OHLCV fields.
-        </p>
-        <DataPreview dataset={dataset} />
-      </section>
+      {targetMode === "all" ? (
+        <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="rounded-lg border border-border bg-card p-4">
+            <Files className="mb-2 size-4 text-primary" aria-hidden="true" />
+            <div className="font-mono text-lg text-foreground">
+              {universe.datasets.length}
+            </div>
+            <div className="text-xs text-muted-foreground">
+              included source files
+            </div>
+          </div>
+          <div className="rounded-lg border border-border bg-card p-4">
+            <Database className="mb-2 size-4 text-primary" aria-hidden="true" />
+            <div className="font-mono text-lg text-foreground">
+              {universe.totalRows.toLocaleString()}
+            </div>
+            <div className="text-xs text-muted-foreground">
+              observations in the research universe
+            </div>
+          </div>
+          <div className="rounded-lg border border-border bg-card p-4">
+            <GitBranch
+              className="mb-2 size-4 text-primary"
+              aria-hidden="true"
+            />
+            <div className="font-mono text-lg text-foreground">
+              {universe.instruments.length} · {universe.hierarchyLinks}
+            </div>
+            <div className="text-xs text-muted-foreground">
+              instruments · timeframe hierarchy links
+            </div>
+          </div>
+          <div className="rounded-lg border border-border bg-card p-4">
+            <Braces className="mb-2 size-4 text-primary" aria-hidden="true" />
+            <div className="font-mono text-lg text-foreground">
+              {universe.inputColumns.length}
+            </div>
+            <div className="text-xs text-muted-foreground">
+              unique uploaded fields
+            </div>
+          </div>
+          <div className="rounded-lg border border-border bg-card p-4 sm:col-span-2 xl:col-span-4">
+            <div className="mb-2 text-xs font-medium uppercase tracking-wide text-foreground">
+              Canonical hierarchy
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {universe.instruments.map((instrument) => (
+                <span
+                  key={instrument.instrumentKey}
+                  className="rounded border border-border bg-background px-2 py-1 font-mono text-xs text-muted-foreground"
+                >
+                  {instrument.instrumentKey}:{" "}
+                  {instrument.timeframeLabels.join(" → ")}
+                </span>
+              ))}
+            </div>
+          </div>
+        </section>
+      ) : (
+        <section
+          data-ocid="page.feature_generator.data_preview_section"
+          className="flex flex-col gap-2"
+        >
+          <div className="flex items-center gap-2">
+            <Database className="size-4 text-primary" aria-hidden="true" />
+            <h3 className="font-display text-sm font-semibold uppercase tracking-wide text-foreground">
+              Explicitly focused dataset
+            </h3>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            This preview is shown only because single-target mode is active.
+          </p>
+          <DataPreview dataset={dataset} />
+        </section>
+      )}
 
       {/* Summary header */}
       <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-4 shadow-subtle sm:flex-row sm:items-center sm:justify-between">
@@ -205,19 +295,20 @@ export default function FeatureGeneratorPage() {
           <div className="flex flex-col">
             <h2 className="font-display text-base font-semibold text-foreground">
               <span className="font-mono tabular-nums text-primary">
-                {features.length}
+                {displayFeatures.length}
               </span>{" "}
               features generated across{" "}
               <span className="font-mono tabular-nums text-primary">
                 {categories.size}
               </span>{" "}
-              categories
+              {categories.size === 1 ? "category" : "categories"}
             </h2>
             <p className="text-xs text-muted-foreground">
               <span className="font-mono tabular-nums">{enabledCount}</span> of{" "}
-              <span className="font-mono tabular-nums">{features.length}</span>{" "}
-              enabled for pattern testing ·{" "}
-              <span className="font-mono">{dataset.name}</span>
+              <span className="font-mono tabular-nums">
+                {displayFeatures.length}
+              </span>{" "}
+              schema-supported capabilities enabled
             </p>
           </div>
         </div>
@@ -253,7 +344,7 @@ export default function FeatureGeneratorPage() {
           or use search to find a specific feature by name.
         </p>
         <FeatureCatalog
-          features={features}
+          features={displayFeatures}
           enabledMap={effectiveEnabledMap}
           onToggle={handleToggle}
           onSetCategoryEnabled={handleSetCategoryEnabled}
@@ -261,7 +352,7 @@ export default function FeatureGeneratorPage() {
       </section>
 
       {/* Stats section */}
-      {featureValues ? (
+      {targetMode === "single" && featureValues ? (
         <section
           data-ocid="page.feature_generator.stats_section"
           className="flex flex-col gap-2"

@@ -95,21 +95,53 @@ function parseNumber(raw: string): number | null {
   return Number.isNaN(n) ? null : n;
 }
 
-function inferTimeframe(bars: OHLCVBar[]): Timeframe {
-  if (bars.length < 2) return "unknown";
+function inferIntervalMs(bars: OHLCVBar[]): number {
+  if (bars.length < 2) return 60_000;
   const deltas: number[] = [];
   for (let i = 1; i < Math.min(bars.length, 50); i++) {
     deltas.push(bars[i].timestamp - bars[i - 1].timestamp);
   }
   const sorted = deltas.slice().sort((a, b) => a - b);
   const median = sorted[Math.floor(sorted.length / 2)];
-  const min = 60 * 1000;
-  if (median < 90 * 1000) return "1m";
-  if (median < 8 * min) return "5m";
-  if (median < 22 * min) return "15m";
-  if (median < 90 * min) return "1h";
-  if (median < 36 * 60 * min) return "1d";
-  return "unknown";
+  return median > 0 ? median : 60_000;
+}
+
+function inferTimeframe(intervalMs: number): Timeframe {
+  const minute = 60_000;
+  const choices: Array<[number, Timeframe]> = [
+    [minute, "1m"],
+    [3 * minute, "3m"],
+    [5 * minute, "5m"],
+    [15 * minute, "15m"],
+    [30 * minute, "30m"],
+    [60 * minute, "1h"],
+    [4 * 60 * minute, "4h"],
+    [24 * 60 * minute, "1d"],
+    [7 * 24 * 60 * minute, "1w"],
+  ];
+  const nearest = choices.reduce((best, candidate) =>
+    Math.abs(candidate[0] - intervalMs) < Math.abs(best[0] - intervalMs)
+      ? candidate
+      : best,
+  );
+  return Math.abs(nearest[0] - intervalMs) / nearest[0] <= 0.15
+    ? nearest[1]
+    : "unknown";
+}
+
+function inferInstrumentKey(name: string): string {
+  const withoutExtension = name.replace(/\.(csv|txt|md)$/i, "");
+  const withoutTimeframe = withoutExtension
+    .replace(
+      /(?:^|[\s_.-])(?:1m|3m|5m|15m|30m|1h|4h|1d|1w|60|240|daily|weekly)(?=$|[\s_.-])/gi,
+      " ",
+    )
+    .replace(/\(\d+\)$/g, " ");
+  return (
+    normalizeHeader(withoutTimeframe).replace(/^(?:\d+_)+/, "") ||
+    normalizeHeader(withoutExtension) ||
+    "uploaded_series"
+  );
 }
 
 /** Monotonic id counter for datasets created in this session. */
@@ -215,26 +247,37 @@ function buildDatasetFromRows(rows: string[][], name: string): ParseResult {
   const closeIdx = detectColumnIndex(headers, "close");
   const volIdx = detectColumnIndex(headers, "volume");
 
+  const hasOHLC =
+    openIdx !== -1 && highIdx !== -1 && lowIdx !== -1 && closeIdx !== -1;
+  const hasVolume = volIdx !== -1;
+  const sampleRows = rows.slice(1, 201);
+  const numericIndices = headers
+    .map((_, index) => index)
+    .filter(
+      (index) =>
+        index !== tsIdx &&
+        sampleRows.some((row) => parseNumber(row[index] ?? "") != null),
+    );
+  const outcomeIdx = closeIdx !== -1 ? closeIdx : (numericIndices[0] ?? -1);
+
   const ohlcvIndices = new Set<number>();
-  if (openIdx !== -1) ohlcvIndices.add(openIdx);
-  if (highIdx !== -1) ohlcvIndices.add(highIdx);
-  if (lowIdx !== -1) ohlcvIndices.add(lowIdx);
-  if (closeIdx !== -1) ohlcvIndices.add(closeIdx);
-  if (volIdx !== -1) ohlcvIndices.add(volIdx);
+  if (hasOHLC) {
+    ohlcvIndices.add(openIdx);
+    ohlcvIndices.add(highIdx);
+    ohlcvIndices.add(lowIdx);
+    ohlcvIndices.add(closeIdx);
+  }
+  if (hasVolume) ohlcvIndices.add(volIdx);
 
   const missing: string[] = [];
   if (tsIdx === -1) missing.push("timestamp (or date/time/datetime)");
-  if (openIdx === -1) missing.push("open");
-  if (highIdx === -1) missing.push("high");
-  if (lowIdx === -1) missing.push("low");
-  if (closeIdx === -1) missing.push("close");
+  if (outcomeIdx === -1) missing.push("at least one numeric value column");
   if (missing.length > 0) {
     return {
       error: `Missing required columns: ${missing.join(", ")}. Found columns: ${headers.join(", ")}.`,
     };
   }
 
-  const sampleRows = rows.slice(1, 201);
   const { originalColumns, columns } = buildColumns(
     headers,
     tsIdx,
@@ -262,10 +305,11 @@ function buildDatasetFromRows(rows: string[][], name: string): ParseResult {
     const row = rows[i];
     if (!row || row.length === 0) continue;
     const ts = parseTimestamp(row[tsIdx] ?? "");
-    const o = parseNumber(row[openIdx] ?? "");
-    const h = parseNumber(row[highIdx] ?? "");
-    const l = parseNumber(row[lowIdx] ?? "");
-    const c = parseNumber(row[closeIdx] ?? "");
+    const primary = parseNumber(row[outcomeIdx] ?? "");
+    const o = hasOHLC ? parseNumber(row[openIdx] ?? "") : primary;
+    const h = hasOHLC ? parseNumber(row[highIdx] ?? "") : primary;
+    const l = hasOHLC ? parseNumber(row[lowIdx] ?? "") : primary;
+    const c = hasOHLC ? parseNumber(row[closeIdx] ?? "") : primary;
     const v = volIdx === -1 ? 0 : (parseNumber(row[volIdx] ?? "") ?? 0);
 
     if (ts == null || o == null || h == null || l == null || c == null) {
@@ -301,6 +345,8 @@ function buildDatasetFromRows(rows: string[][], name: string): ParseResult {
   }
   bars.length = 0;
   for (const b of sortedBars) bars.push(b);
+  const intervalMs = inferIntervalMs(bars);
+  const outcomeColumn = columns[outcomeIdx];
 
   return {
     dataset: {
@@ -311,7 +357,13 @@ function buildDatasetFromRows(rows: string[][], name: string): ParseResult {
       columns,
       bars,
       columnValues,
-      timeframe: inferTimeframe(bars),
+      timeframe: inferTimeframe(intervalMs),
+      intervalMs,
+      instrumentKey: inferInstrumentKey(name),
+      hasOHLC,
+      hasVolume,
+      outcomeColumnKey: outcomeColumn.key,
+      outcomeLabel: outcomeColumn.label,
       dateRange: {
         start: bars[0].timestamp,
         end: bars[bars.length - 1].timestamp,

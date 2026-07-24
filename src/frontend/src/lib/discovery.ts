@@ -451,6 +451,7 @@ export function buildPlainEnglishSentence(
   features: Feature[],
   direction: Direction,
   horizon: number,
+  outcomeLabel = "price",
 ): string {
   const byId = new Map(features.map((f) => [f.id, f]));
   const clauses = conditions.map((c) =>
@@ -473,7 +474,7 @@ export function buildPlainEnglishSentence(
       : direction === "bearish"
         ? "fall"
         : "move";
-  return `When ${joined}, price tends to ${tendency} over the next ${horizon} bars.`;
+  return `When ${joined}, ${outcomeLabel} tends to ${tendency} over the next ${horizon} observations.`;
 }
 
 function conditionLabel(cond: Condition, feature: Feature | undefined): string {
@@ -805,6 +806,85 @@ function passesRatioFilter(ratio: number, threshold: number): boolean {
   return ratio > threshold;
 }
 
+function featureAssociationScore(
+  feature: Feature,
+  values: FeatureMatrix[string],
+  bars: OHLCVBar[],
+): number {
+  const usable = Math.max(0, bars.length - 1);
+  if (usable === 0) return 0;
+  const stride = Math.max(1, Math.floor(usable / 256));
+  if (feature.type === "numeric") {
+    let count = 0;
+    let sx = 0;
+    let sy = 0;
+    let sxx = 0;
+    let syy = 0;
+    let sxy = 0;
+    for (let i = 0; i < usable; i += stride) {
+      const value = values[i];
+      if (typeof value !== "number" || !Number.isFinite(value)) continue;
+      const base = Math.abs(bars[i].close) || 1;
+      const outcome = (bars[i + 1].close - bars[i].close) / base;
+      count++;
+      sx += value;
+      sy += outcome;
+      sxx += value * value;
+      syy += outcome * outcome;
+      sxy += value * outcome;
+    }
+    if (count < 8) return 0;
+    const denominator = Math.sqrt(
+      Math.max(0, count * sxx - sx * sx) * Math.max(0, count * syy - sy * sy),
+    );
+    return denominator > 0
+      ? Math.abs((count * sxy - sx * sy) / denominator)
+      : 0;
+  }
+
+  const groups = new Map<string, { sum: number; count: number }>();
+  let total = 0;
+  for (let i = 0; i < usable; i += stride) {
+    const value = values[i];
+    if (typeof value !== "string") continue;
+    const base = Math.abs(bars[i].close) || 1;
+    const outcome = (bars[i + 1].close - bars[i].close) / base;
+    const group = groups.get(value) ?? { sum: 0, count: 0 };
+    group.sum += outcome;
+    group.count++;
+    groups.set(value, group);
+    total++;
+  }
+  if (total < 8 || groups.size < 2) return 0;
+  const means = [...groups.values()]
+    .filter((group) => group.count >= 2)
+    .map((group) => group.sum / group.count);
+  return means.length >= 2 ? Math.max(...means) - Math.min(...means) : 0;
+}
+
+/**
+ * Every available feature is inspected on a bounded chronological sample.
+ * Only the strongest features advance to combinatorial testing, preventing a
+ * wide upload from turning into hundreds of thousands of condition objects.
+ */
+function screenFeatures(
+  features: Feature[],
+  matrix: FeatureMatrix,
+  bars: OHLCVBar[],
+  limit = 1200,
+): Feature[] {
+  if (features.length <= limit) return features;
+  return features
+    .map((feature, index) => ({
+      feature,
+      index,
+      score: featureAssociationScore(feature, matrix[feature.id] ?? [], bars),
+    }))
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .slice(0, limit)
+    .map((item) => item.feature);
+}
+
 /**
  * Quality score for a set of surviving patterns, used to compare grid-search
  * settings. Mirrors the Max Data probe's "pick the best" approach: we want
@@ -867,13 +947,15 @@ export async function runDiscovery(
   onProgress: (p: DiscoveryProgress) => void,
   shouldCancel: () => boolean,
   featureOverrides: FeatureOverrides = {},
+  outcomeLabel = "price",
 ): Promise<Pattern[]> {
-  const enabledFeatures = features.filter(
+  const availableFeatures = features.filter(
     (f) =>
       f.enabled &&
       config.enabledCategories.includes(f.category) &&
       matrix[f.id] != null,
   );
+  const enabledFeatures = screenFeatures(availableFeatures, matrix, bars);
 
   const lookups = new Map<string, FeatureLookup>();
   for (const f of enabledFeatures) {
@@ -973,6 +1055,7 @@ export async function runDiscovery(
         shouldCancel,
         startTime,
         /* quiet */ true,
+        outcomeLabel,
       );
       const score = scorePatternSet(probePatterns, config.minSampleSize);
       if (score > bestHoldScore) {
@@ -1039,6 +1122,7 @@ export async function runDiscovery(
         shouldCancel,
         startTime,
         /* quiet */ true,
+        outcomeLabel,
       );
       const score = scorePatternSet(probePatterns, config.minSampleSize);
       if (score > bestRatioScore) {
@@ -1074,6 +1158,7 @@ export async function runDiscovery(
     shouldCancel,
     startTime,
     /* quiet */ false,
+    outcomeLabel,
   );
 
   // Rank by score desc, then sample size desc.
@@ -1119,6 +1204,7 @@ async function evaluateAllPatterns(
   shouldCancel: () => boolean,
   startTime: number,
   quiet: boolean,
+  outcomeLabel: string,
 ): Promise<Pattern[]> {
   const patterns: Pattern[] = [];
   const seenMatchSets = new Set<string>();
@@ -1222,6 +1308,7 @@ async function evaluateAllPatterns(
                 features,
                 result.metrics.direction,
                 horizon,
+                outcomeLabel,
               );
               const coverage = computePatternCoverage(
                 bars,
@@ -1512,14 +1599,22 @@ export function computeCrossSymbolCoverage(
     switch (timeframe) {
       case "1m":
         return 60_000;
+      case "3m":
+        return 180_000;
       case "5m":
         return 300_000;
       case "15m":
         return 900_000;
+      case "30m":
+        return 1_800_000;
       case "1h":
         return 3_600_000;
+      case "4h":
+        return 14_400_000;
       case "1d":
         return 86_400_000;
+      case "1w":
+        return 604_800_000;
       default:
         return 60_000;
     }

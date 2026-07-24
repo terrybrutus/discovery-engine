@@ -147,7 +147,7 @@ export function FeatureCatalog({
         <div className="flex items-center gap-2">
           <span className="text-xs text-muted-foreground tabular-nums">
             {totalMatched} of {features.length} features · {totalCategories}{" "}
-            categories
+            {totalCategories === 1 ? "category" : "categories"}
           </span>
           <Button
             data-ocid="feature_catalog.expand_all_button"

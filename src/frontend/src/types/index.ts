@@ -2,7 +2,17 @@
 // All computation is client-side; these types are the shared contract
 // between the engine libs, the zustand store, and the UI.
 
-export type Timeframe = "1m" | "5m" | "15m" | "1h" | "1d" | "unknown";
+export type Timeframe =
+  | "1m"
+  | "3m"
+  | "5m"
+  | "15m"
+  | "30m"
+  | "1h"
+  | "4h"
+  | "1d"
+  | "1w"
+  | "unknown";
 
 export interface OHLCVBar {
   timestamp: number; // unix ms
@@ -60,6 +70,17 @@ export interface Dataset {
    */
   columnValues?: Record<string, number[]>;
   timeframe: Timeframe;
+  /** Median row interval; canonical hierarchy uses this rather than filename guesses. */
+  intervalMs: number;
+  /** Normalized instrument/source identity inferred from the filename. */
+  instrumentKey: string;
+  /** True only when open, high, low, and close were actually uploaded. */
+  hasOHLC: boolean;
+  /** True only when volume was actually uploaded. */
+  hasVolume: boolean;
+  /** Field whose future movement is evaluated for this dataset. */
+  outcomeColumnKey: string;
+  outcomeLabel: string;
   dateRange: DateRange;
   rowCount: number;
 }

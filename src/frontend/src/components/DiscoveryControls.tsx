@@ -9,7 +9,6 @@ import { isFeatureEligibleForDiscovery, runDiscovery } from "@/lib/discovery";
 import type { FeatureOverride, FeatureOverrides } from "@/lib/features";
 import { cn } from "@/lib/utils";
 import { selectFeatureCategories, useEngineStore } from "@/store/engineStore";
-import { BUILTIN_CATEGORIES } from "@/types";
 import type { DiscoveryConfig, FeatureCategory } from "@/types";
 import {
   ArrowRight,
@@ -48,15 +47,6 @@ const DEPTH_OPTIONS: DepthOption[] = DEPTHS.map((d) => ({
             : "Maximal",
 }));
 
-const BUILTIN_SET = new Set<string>(BUILTIN_CATEGORIES);
-const PRIMARY_RESEARCH_LENSES = new Set([
-  "Market Structure",
-  "Sequences",
-  "Levels & Sessions",
-  "Bollinger",
-  "Imported Signals",
-  "Multi-Timeframe",
-]);
 const LENS_DESCRIPTIONS: Record<string, string> = {
   "Market Structure": "Pivots, HH/HL/LH/LL, BOS, and liquidity sweeps",
   Sequences: "Ordered sweep/reclaim, break/retest, and swing progressions",
@@ -122,9 +112,9 @@ export function DiscoveryControls({
   const featureOverrides = useEngineStore((s) => s.featureOverrides);
   const setFeatureOverride = useEngineStore((s) => s.setFeatureOverride);
   const clearFeatureOverride = useEngineStore((s) => s.clearFeatureOverride);
+  const targetMode = useEngineStore((s) => s.targetMode);
 
-  // Dynamic category list: built-in 11 + any categories introduced by
-  // generated features (e.g. uploaded-column-derived "Custom Columns").
+  // Categories exist only when the uploaded schema supports them.
   const categories = useEngineStore(selectFeatureCategories);
 
   const disabled = isRunning || !featuresAvailable;
@@ -609,11 +599,11 @@ export function DiscoveryControls({
 
       <Separator />
 
-      {/* ---- Research lenses (dynamic) ---- */}
+      {/* ---- Schema-supported relationships ---- */}
       <div className={cn("flex flex-col gap-3", disabled && "opacity-60")}>
         <div className="flex items-baseline justify-between">
           <span className="text-sm font-medium text-foreground">
-            Research lenses
+            Available relationships
           </span>
           <span
             className="font-mono text-xs tabular-nums text-muted-foreground"
@@ -623,83 +613,47 @@ export function DiscoveryControls({
           </span>
         </div>
         <p className="text-xs text-muted-foreground">
-          These are not a fixed list of indicators. They control which forms of
-          market context the engine may combine.
+          Generated only from fields present in your uploads. The engine does
+          not assume VWAP, volume, price, or any other missing measurement.
         </p>
         <div className="flex flex-col gap-2">
-          {categories
-            .filter((category) => PRIMARY_RESEARCH_LENSES.has(category))
-            .map((cat) => {
-              const checked = config.enabledCategories.includes(cat);
-              const isCustom = !BUILTIN_SET.has(cat);
-              const checkboxId = `discovery_controls.category.${cat.replace(/\s+/g, "_").toLowerCase()}`;
-              return (
-                <label
-                  key={cat}
-                  htmlFor={checkboxId}
-                  className={cn(
-                    "flex cursor-pointer items-start gap-2 rounded-md border border-border bg-card/50 px-3 py-2 text-sm text-foreground select-none",
-                    disabled && "cursor-not-allowed",
-                  )}
-                >
-                  <Checkbox
-                    id={checkboxId}
-                    data-ocid={checkboxId}
-                    checked={checked}
-                    disabled={disabled}
-                    onCheckedChange={(v) => toggleCategory(cat, v === true)}
-                  />
-                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                    <span className="leading-tight font-medium">{cat}</span>
+          {categories.map((cat) => {
+            const checked = config.enabledCategories.includes(cat);
+            const checkboxId = `discovery_controls.category.${cat.replace(/\s+/g, "_").toLowerCase()}`;
+            return (
+              <label
+                key={cat}
+                htmlFor={checkboxId}
+                className={cn(
+                  "flex cursor-pointer items-start gap-2 rounded-md border border-border bg-card/50 px-3 py-2 text-sm text-foreground select-none",
+                  disabled && "cursor-not-allowed",
+                )}
+              >
+                <Checkbox
+                  id={checkboxId}
+                  data-ocid={checkboxId}
+                  checked={checked}
+                  disabled={disabled}
+                  onCheckedChange={(value) =>
+                    toggleCategory(cat, value === true)
+                  }
+                />
+                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <span className="leading-tight font-medium">{cat}</span>
+                  {LENS_DESCRIPTIONS[cat] ? (
                     <span className="text-[11px] leading-snug text-muted-foreground">
                       {LENS_DESCRIPTIONS[cat]}
                     </span>
-                  </span>
-                  {isCustom ? (
-                    <Badge
-                      variant="secondary"
-                      className="h-4 px-1.5 text-[9px] font-medium uppercase tracking-wide"
-                    >
-                      Custom
-                    </Badge>
                   ) : null}
-                </label>
-              );
-            })}
-        </div>
-        <div>
-          <div className="mb-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-            Supporting measurements
-          </div>
-          <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-            {categories
-              .filter((category) => !PRIMARY_RESEARCH_LENSES.has(category))
-              .map((cat) => {
-                const checked = config.enabledCategories.includes(cat);
-                const checkboxId = `discovery_controls.category.${cat.replace(/\s+/g, "_").toLowerCase()}`;
-                return (
-                  <label
-                    key={cat}
-                    htmlFor={checkboxId}
-                    className={cn(
-                      "flex cursor-pointer items-center gap-2 text-xs text-foreground select-none",
-                      disabled && "cursor-not-allowed",
-                    )}
-                  >
-                    <Checkbox
-                      id={checkboxId}
-                      data-ocid={checkboxId}
-                      checked={checked}
-                      disabled={disabled}
-                      onCheckedChange={(value) =>
-                        toggleCategory(cat, value === true)
-                      }
-                    />
-                    <span className="leading-tight">{cat}</span>
-                  </label>
-                );
-              })}
-          </div>
+                </span>
+              </label>
+            );
+          })}
+          {categories.length === 0 ? (
+            <p className="text-xs text-muted-foreground italic">
+              No supported relationships have been generated yet.
+            </p>
+          ) : null}
         </div>
         <div className="flex gap-3 pt-1">
           <button
@@ -723,72 +677,78 @@ export function DiscoveryControls({
         </div>
       </div>
 
-      <Separator />
+      {targetMode === "single" ? (
+        <>
+          <Separator />
 
-      {/* ---- Max Data probe ---- */}
-      <div className={cn("flex flex-col gap-2", disabled && "opacity-60")}>
-        <div className="flex items-center gap-2">
-          <Sparkles className="size-4 text-primary" aria-hidden="true" />
-          <span className="text-sm font-medium text-foreground">Max Data</span>
-        </div>
-        <p className="text-xs text-muted-foreground">
-          Scan the loaded dataset and find the loosest filter settings that
-          still return at least one pattern.
-        </p>
-        <Button
-          type="button"
-          variant="secondary"
-          data-ocid="discovery_controls.max_data_button"
-          disabled={disabled || maxDataScanning}
-          onClick={() => void runMaxDataProbe()}
-        >
-          {maxDataScanning ? "Scanning…" : "Find loosest viable settings"}
-        </Button>
-        {maxDataError ? (
-          <p
-            className="text-xs text-destructive"
-            data-ocid="discovery_controls.max_data_error"
-          >
-            {maxDataError}
-          </p>
-        ) : null}
-        {maxDataSuggestion ? (
-          <div
-            className="flex flex-col gap-2 rounded-md border border-border bg-muted/40 p-3"
-            data-ocid="discovery_controls.max_data_result"
-          >
-            <p className="text-xs text-foreground">
-              Loosest viable: win rate ≥{" "}
-              <span className="font-mono tabular-nums">
-                {maxDataSuggestion.minWinRate}%
+          {/* ---- Max Data probe ---- */}
+          <div className={cn("flex flex-col gap-2", disabled && "opacity-60")}>
+            <div className="flex items-center gap-2">
+              <Sparkles className="size-4 text-primary" aria-hidden="true" />
+              <span className="text-sm font-medium text-foreground">
+                Max Data
               </span>
-              , sample ≥{" "}
-              <span className="font-mono tabular-nums">
-                {maxDataSuggestion.minSampleSize}
-              </span>
-              , depth{" "}
-              <span className="font-mono tabular-nums">
-                {maxDataSuggestion.maxDepth}
-              </span>{" "}
-              —{" "}
-              <span className="font-mono tabular-nums text-primary">
-                {maxDataSuggestion.patternCount}
-              </span>{" "}
-              patterns found
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Scan the explicitly focused dataset and find the loosest filter
+              settings that still return at least one pattern.
             </p>
             <Button
               type="button"
-              size="sm"
-              data-ocid="discovery_controls.max_data_apply_button"
-              disabled={disabled}
-              onClick={applyMaxData}
-              className="self-start"
+              variant="secondary"
+              data-ocid="discovery_controls.max_data_button"
+              disabled={disabled || maxDataScanning}
+              onClick={() => void runMaxDataProbe()}
             >
-              Apply settings
+              {maxDataScanning ? "Scanning…" : "Find loosest viable settings"}
             </Button>
+            {maxDataError ? (
+              <p
+                className="text-xs text-destructive"
+                data-ocid="discovery_controls.max_data_error"
+              >
+                {maxDataError}
+              </p>
+            ) : null}
+            {maxDataSuggestion ? (
+              <div
+                className="flex flex-col gap-2 rounded-md border border-border bg-muted/40 p-3"
+                data-ocid="discovery_controls.max_data_result"
+              >
+                <p className="text-xs text-foreground">
+                  Loosest viable: win rate ≥{" "}
+                  <span className="font-mono tabular-nums">
+                    {maxDataSuggestion.minWinRate}%
+                  </span>
+                  , sample ≥{" "}
+                  <span className="font-mono tabular-nums">
+                    {maxDataSuggestion.minSampleSize}
+                  </span>
+                  , depth{" "}
+                  <span className="font-mono tabular-nums">
+                    {maxDataSuggestion.maxDepth}
+                  </span>{" "}
+                  —{" "}
+                  <span className="font-mono tabular-nums text-primary">
+                    {maxDataSuggestion.patternCount}
+                  </span>{" "}
+                  patterns found
+                </p>
+                <Button
+                  type="button"
+                  size="sm"
+                  data-ocid="discovery_controls.max_data_apply_button"
+                  disabled={disabled}
+                  onClick={applyMaxData}
+                  className="self-start"
+                >
+                  Apply settings
+                </Button>
+              </div>
+            ) : null}
           </div>
-        ) : null}
-      </div>
+        </>
+      ) : null}
 
       <Separator />
 
@@ -830,138 +790,151 @@ export function DiscoveryControls({
       <Separator />
 
       {/* ---- Per-feature manual range overrides ---- */}
-      <div className={cn("flex flex-col gap-3", disabled && "opacity-60")}>
-        <div className="flex items-baseline justify-between">
-          <span className="text-sm font-medium text-foreground">
-            Manual threshold search bounds
-          </span>
-          <span className="text-[11px] text-muted-foreground">
-            empirical quantiles by default
-          </span>
-        </div>
-        <p className="text-xs text-muted-foreground">
-          By default, thresholds come from the feature’s actual 20th, 40th,
-          60th, and 80th percentiles. Editing min/max replaces those empirical
-          thresholds with four evenly spaced thresholds inside your manual
-          bounds and can materially change the discovered patterns. Reset
-          restores empirical quantiles.
-        </p>
-        {numericFeatures.length === 0 ? (
-          <p className="text-xs text-muted-foreground italic">
-            No numeric features available yet.
-          </p>
-        ) : (
-          <div className="flex flex-col gap-2.5">
-            {numericFeatures.map((f) => {
-              const override = featureOverrides[f.id];
-              const observed = (featureValues?.[f.id] ?? []).filter(
-                (value): value is number =>
-                  typeof value === "number" && Number.isFinite(value),
-              );
-              const autoRange: [number, number] =
-                observed.length > 0
-                  ? [
-                      observed.reduce(
-                        (minimum, value) => Math.min(minimum, value),
-                        Number.POSITIVE_INFINITY,
-                      ),
-                      observed.reduce(
-                        (maximum, value) => Math.max(maximum, value),
-                        Number.NEGATIVE_INFINITY,
-                      ),
-                    ]
-                  : (f.range ?? [0, 1]);
-              const effective: [number, number] = override?.range ?? autoRange;
-              const isOverridden = Boolean(override);
-              return (
-                <div
-                  key={f.id}
-                  data-ocid={`discovery_controls.feature_override.${f.id}`}
-                  className={cn(
-                    "flex flex-col gap-1.5 rounded-md border border-border bg-muted/20 p-2.5",
-                    isOverridden && "border-primary/40 bg-primary/5",
-                  )}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="truncate text-xs font-medium text-foreground">
-                      {f.name}
-                    </span>
-                    {isOverridden ? (
-                      <Badge
-                        variant="secondary"
-                        className="h-4 shrink-0 px-1.5 text-[9px] font-medium uppercase tracking-wide"
-                      >
-                        Manual
-                      </Badge>
-                    ) : null}
-                  </div>
-                  <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                    <span>observed:</span>
-                    <span className="font-mono tabular-nums">
-                      {autoRange[0].toFixed(2)} – {autoRange[1].toFixed(2)}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <Input
-                      type="number"
-                      inputMode="decimal"
-                      step="any"
-                      aria-label={`Minimum override for ${f.name}`}
-                      data-ocid={`discovery_controls.feature_override.${f.id}.min`}
-                      disabled={disabled}
-                      value={Number.isFinite(effective[0]) ? effective[0] : ""}
-                      onChange={(e) => {
-                        const minRaw = e.target.value;
-                        const min =
-                          minRaw === "" ? autoRange[0] : Number(minRaw);
-                        if (!Number.isFinite(min)) return;
-                        setFeatureOverride(f.id, {
-                          featureId: f.id,
-                          range: [min, effective[1]],
-                        });
-                      }}
-                      className="h-7 font-mono text-xs tabular-nums"
-                    />
-                    <span className="text-xs text-muted-foreground">–</span>
-                    <Input
-                      type="number"
-                      inputMode="decimal"
-                      step="any"
-                      aria-label={`Maximum override for ${f.name}`}
-                      data-ocid={`discovery_controls.feature_override.${f.id}.max`}
-                      disabled={disabled}
-                      value={Number.isFinite(effective[1]) ? effective[1] : ""}
-                      onChange={(e) => {
-                        const maxRaw = e.target.value;
-                        const max =
-                          maxRaw === "" ? autoRange[1] : Number(maxRaw);
-                        if (!Number.isFinite(max)) return;
-                        setFeatureOverride(f.id, {
-                          featureId: f.id,
-                          range: [effective[0], max],
-                        });
-                      }}
-                      className="h-7 font-mono text-xs tabular-nums"
-                    />
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      aria-label={`Reset override for ${f.name}`}
-                      data-ocid={`discovery_controls.feature_override.${f.id}.reset`}
-                      disabled={disabled || !isOverridden}
-                      onClick={() => clearFeatureOverride(f.id)}
-                      className="h-7 shrink-0 px-2"
-                    >
-                      <RotateCcw className="size-3.5" aria-hidden="true" />
-                    </Button>
-                  </div>
-                </div>
-              );
-            })}
+      {targetMode === "single" ? (
+        <div className={cn("flex flex-col gap-3", disabled && "opacity-60")}>
+          <div className="flex items-baseline justify-between">
+            <span className="text-sm font-medium text-foreground">
+              Manual threshold search bounds
+            </span>
+            <span className="text-[11px] text-muted-foreground">
+              empirical quantiles by default
+            </span>
           </div>
-        )}
-      </div>
+          <p className="text-xs text-muted-foreground">
+            By default, thresholds come from the feature’s actual 20th, 40th,
+            60th, and 80th percentiles. Editing min/max replaces those empirical
+            thresholds with four evenly spaced thresholds inside your manual
+            bounds and can materially change the discovered patterns. Reset
+            restores empirical quantiles.
+          </p>
+          {numericFeatures.length === 0 ? (
+            <p className="text-xs text-muted-foreground italic">
+              No numeric features available yet.
+            </p>
+          ) : (
+            <div className="flex flex-col gap-2.5">
+              {numericFeatures.map((f) => {
+                const override = featureOverrides[f.id];
+                const observed = (featureValues?.[f.id] ?? []).filter(
+                  (value): value is number =>
+                    typeof value === "number" && Number.isFinite(value),
+                );
+                const autoRange: [number, number] =
+                  observed.length > 0
+                    ? [
+                        observed.reduce(
+                          (minimum, value) => Math.min(minimum, value),
+                          Number.POSITIVE_INFINITY,
+                        ),
+                        observed.reduce(
+                          (maximum, value) => Math.max(maximum, value),
+                          Number.NEGATIVE_INFINITY,
+                        ),
+                      ]
+                    : (f.range ?? [0, 1]);
+                const effective: [number, number] =
+                  override?.range ?? autoRange;
+                const isOverridden = Boolean(override);
+                return (
+                  <div
+                    key={f.id}
+                    data-ocid={`discovery_controls.feature_override.${f.id}`}
+                    className={cn(
+                      "flex flex-col gap-1.5 rounded-md border border-border bg-muted/20 p-2.5",
+                      isOverridden && "border-primary/40 bg-primary/5",
+                    )}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate text-xs font-medium text-foreground">
+                        {f.name}
+                      </span>
+                      {isOverridden ? (
+                        <Badge
+                          variant="secondary"
+                          className="h-4 shrink-0 px-1.5 text-[9px] font-medium uppercase tracking-wide"
+                        >
+                          Manual
+                        </Badge>
+                      ) : null}
+                    </div>
+                    <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                      <span>observed:</span>
+                      <span className="font-mono tabular-nums">
+                        {autoRange[0].toFixed(2)} – {autoRange[1].toFixed(2)}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <Input
+                        type="number"
+                        inputMode="decimal"
+                        step="any"
+                        aria-label={`Minimum override for ${f.name}`}
+                        data-ocid={`discovery_controls.feature_override.${f.id}.min`}
+                        disabled={disabled}
+                        value={
+                          Number.isFinite(effective[0]) ? effective[0] : ""
+                        }
+                        onChange={(e) => {
+                          const minRaw = e.target.value;
+                          const min =
+                            minRaw === "" ? autoRange[0] : Number(minRaw);
+                          if (!Number.isFinite(min)) return;
+                          setFeatureOverride(f.id, {
+                            featureId: f.id,
+                            range: [min, effective[1]],
+                          });
+                        }}
+                        className="h-7 font-mono text-xs tabular-nums"
+                      />
+                      <span className="text-xs text-muted-foreground">–</span>
+                      <Input
+                        type="number"
+                        inputMode="decimal"
+                        step="any"
+                        aria-label={`Maximum override for ${f.name}`}
+                        data-ocid={`discovery_controls.feature_override.${f.id}.max`}
+                        disabled={disabled}
+                        value={
+                          Number.isFinite(effective[1]) ? effective[1] : ""
+                        }
+                        onChange={(e) => {
+                          const maxRaw = e.target.value;
+                          const max =
+                            maxRaw === "" ? autoRange[1] : Number(maxRaw);
+                          if (!Number.isFinite(max)) return;
+                          setFeatureOverride(f.id, {
+                            featureId: f.id,
+                            range: [effective[0], max],
+                          });
+                        }}
+                        className="h-7 font-mono text-xs tabular-nums"
+                      />
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        aria-label={`Reset override for ${f.name}`}
+                        data-ocid={`discovery_controls.feature_override.${f.id}.reset`}
+                        disabled={disabled || !isOverridden}
+                        onClick={() => clearFeatureOverride(f.id)}
+                        className="h-7 shrink-0 px-2"
+                      >
+                        <RotateCcw className="size-3.5" aria-hidden="true" />
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          Unified discovery uses empirical thresholds independently on every
+          target timeline. Manual per-file bounds are available only in
+          explicit-target mode.
+        </p>
+      )}
     </div>
   );
 }

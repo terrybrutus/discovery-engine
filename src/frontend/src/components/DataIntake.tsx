@@ -217,7 +217,7 @@ export function DataIntake({ onLoaded }: { onLoaded?: () => void } = {}) {
           <p className="text-xs text-muted-foreground">
             {isParsing
               ? "This only takes a moment."
-              : "Or click to browse. We auto-detect columns from the header row — timestamp, open, high, low, close are required (volume optional)."}
+              : "Or click to browse. A timestamp plus at least one numeric field is required; OHLCV and imported indicators are detected only when present."}
           </p>
         </div>
       </button>
@@ -267,7 +267,7 @@ export function DataIntake({ onLoaded }: { onLoaded?: () => void } = {}) {
               Loaded datasets ({datasets.length})
             </span>
             <span className="text-[11px] text-muted-foreground/70">
-              Click a card to make it active.
+              Inspect a file; this does not make it primary.
             </span>
           </div>
           {datasets.map((ds, i) => (
@@ -322,9 +322,9 @@ export function DataIntake({ onLoaded }: { onLoaded?: () => void } = {}) {
         className="text-xs leading-relaxed text-muted-foreground"
       >
         Everything stays in your browser — nothing is uploaded to a server.
-        Upload multiple files to manage them as separate datasets; the active
-        one feeds feature generation and discovery. The sample dataset is one
-        year of 5-minute NQ-style futures bars, so you can click{" "}
+        Every selected file participates in the unified research universe by
+        default; you can explicitly focus one later if needed. The sample
+        dataset is one year of 5-minute NQ-style futures bars, so you can click{" "}
         <span className="text-foreground font-medium">Use Sample Dataset</span>{" "}
         and start exploring right away.
       </p>

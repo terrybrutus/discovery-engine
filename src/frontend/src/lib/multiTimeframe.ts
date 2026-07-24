@@ -1,6 +1,9 @@
 import type { Dataset, Feature, FeatureMatrix, Timeframe } from "@/types";
 
 export function datasetIntervalMs(dataset: Dataset): number {
+  if (Number.isFinite(dataset.intervalMs) && dataset.intervalMs > 0) {
+    return dataset.intervalMs;
+  }
   const deltas: number[] = [];
   for (let i = 1; i < Math.min(dataset.bars.length, 200); i++) {
     const delta = dataset.bars[i].timestamp - dataset.bars[i - 1].timestamp;
@@ -12,13 +15,49 @@ export function datasetIntervalMs(dataset: Dataset): number {
   }
   const fallback: Record<Timeframe, number> = {
     "1m": 60_000,
+    "3m": 3 * 60_000,
     "5m": 5 * 60_000,
     "15m": 15 * 60_000,
+    "30m": 30 * 60_000,
     "1h": 60 * 60_000,
+    "4h": 4 * 60 * 60_000,
     "1d": 24 * 60 * 60_000,
+    "1w": 7 * 24 * 60 * 60_000,
     unknown: 60_000,
   };
   return fallback[dataset.timeframe];
+}
+
+/**
+ * Array-compatible, read-only aligned series. Values are resolved through the
+ * shared timestamp index only when discovery reads them, so a source feature
+ * is never copied into another full target-length array.
+ */
+function lazyAlignedSeries(
+  sourceValues: FeatureMatrix[string],
+  alignedIndices: number[],
+): FeatureMatrix[string] {
+  const target = new Array<number | string | undefined>(alignedIndices.length);
+  return new Proxy(target, {
+    get(array, property, receiver) {
+      if (typeof property === "string" && /^\d+$/.test(property)) {
+        const targetIndex = Number(property);
+        const sourceIndex = alignedIndices[targetIndex] ?? -1;
+        return sourceIndex >= 0 ? sourceValues[sourceIndex] : undefined;
+      }
+      return Reflect.get(array, property, receiver);
+    },
+    has(array, property) {
+      if (typeof property === "string" && /^\d+$/.test(property)) {
+        const index = Number(property);
+        return index >= 0 && index < alignedIndices.length;
+      }
+      return Reflect.has(array, property);
+    },
+    set() {
+      return false;
+    },
+  });
 }
 
 function contextPrefix(dataset: Dataset): string {
@@ -203,9 +242,9 @@ export interface ResearchSpace {
 }
 
 /**
- * Builds the actual discovery design matrix. The active dataset supplies the
- * prediction target; every other selected dataset contributes its latest
- * causally completed state at each active-bar decision time.
+ * Builds one bounded pass through the unified research universe. `target`
+ * supplies that pass's outcome timeline; every other selected dataset
+ * contributes its latest causally completed state at each decision time.
  */
 export function buildMultiTimeframeResearchSpace(
   target: Dataset,
@@ -236,10 +275,7 @@ export function buildMultiTimeframeResearchSpace(
       const sourceValues = sourceMatrix[sourceFeature.id];
       if (!sourceValues) continue;
       const id = `${prefix}${sourceFeature.id}`;
-      const aligned = alignedIndices.map((sourceIndex) =>
-        sourceIndex >= 0 ? sourceValues[sourceIndex] : undefined,
-      );
-      if (!aligned.some((value) => value != null)) continue;
+      const aligned = lazyAlignedSeries(sourceValues, alignedIndices);
       features.push({
         ...sourceFeature,
         id,
@@ -253,14 +289,16 @@ export function buildMultiTimeframeResearchSpace(
       });
       matrix[id] = aligned;
     }
-    addDevelopingHigherTimeframeFeatures(
-      target,
-      source,
-      alignedIndices,
-      features,
-      matrix,
-      prefix,
-    );
+    if (target.instrumentKey === source.instrumentKey) {
+      addDevelopingHigherTimeframeFeatures(
+        target,
+        source,
+        alignedIndices,
+        features,
+        matrix,
+        prefix,
+      );
+    }
   }
 
   return {

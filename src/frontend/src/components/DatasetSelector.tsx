@@ -13,13 +13,12 @@ interface DatasetSelectorProps {
   selectedDatasetIds?: string[];
   /** Toggle inclusion without changing the active feature dataset. */
   onToggleSelected?: (id: string) => void;
+  targetMode?: "all" | "single";
 }
 
 /**
- * Compact list of all loaded datasets with the active one highlighted.
- * Lets the user switch the active dataset directly from the discovery
- * page. The active dataset supplies prediction outcomes; every checked
- * dataset contributes causally aligned context to the same discovery matrix.
+ * Shows included sources in unified mode and lets the user deliberately
+ * choose an explicit target when switching to focused mode.
  *
  * This component is presentational — it does not touch the store. The
  * parent wires `datasets`, `activeDatasetId`, and `onSelect` (typically
@@ -31,6 +30,7 @@ export function DatasetSelector({
   onSelect,
   selectedDatasetIds,
   onToggleSelected,
+  targetMode = "single",
 }: DatasetSelectorProps) {
   if (datasets.length === 0) {
     return (
@@ -41,7 +41,9 @@ export function DatasetSelector({
         <div className="flex items-center gap-2">
           <Layers className="size-4 text-primary" aria-hidden="true" />
           <h2 className="font-display text-sm font-semibold text-foreground">
-            Prediction target & context
+            {targetMode === "all"
+              ? "Included research sources"
+              : "Explicit target & context"}
           </h2>
         </div>
         <p
@@ -65,7 +67,9 @@ export function DatasetSelector({
         <div className="flex items-center gap-2">
           <Layers className="size-4 text-primary" aria-hidden="true" />
           <h2 className="font-display text-sm font-semibold text-foreground">
-            Prediction target & context
+            {targetMode === "all"
+              ? "Included research sources"
+              : "Explicit target & context"}
           </h2>
         </div>
         <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
@@ -80,7 +84,7 @@ export function DatasetSelector({
         className="flex max-h-[40vh] flex-col gap-1.5 overflow-y-auto"
       >
         {datasets.map((ds, i) => {
-          const isActive = ds.id === activeDatasetId;
+          const isActive = targetMode === "single" && ds.id === activeDatasetId;
           const label = ds.label ?? ds.name;
           return (
             <li
@@ -100,7 +104,7 @@ export function DatasetSelector({
                   onChange={() => onToggleSelected(ds.id)}
                   aria-label={
                     isActive
-                      ? `${label} is required as the prediction target`
+                      ? `${label} is required as the explicit prediction target`
                       : `Include ${label} in multi-timeframe analysis`
                   }
                   className="ml-3 size-4 shrink-0 accent-[oklch(var(--primary))]"
@@ -146,10 +150,9 @@ export function DatasetSelector({
           aria-hidden="true"
         />
         <p className="text-xs leading-relaxed text-muted-foreground">
-          In all-target mode, every checked dataset supplies outcomes in its own
-          pass. In single-target mode, the highlighted dataset supplies
-          outcomes. Other files provide completed and reconstructed intrabar
-          context—never future bars.
+          {targetMode === "all"
+            ? "No file is primary. Every checked source participates in the unified hierarchy and supplies eligible outcomes in its own bounded pass."
+            : "The highlighted source supplies the explicit outcome. Other checked sources provide completed and reconstructed context—never future observations."}
         </p>
       </div>
     </div>

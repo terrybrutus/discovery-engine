@@ -421,7 +421,17 @@ function buildContributions(
 // ---------------------------------------------------------------------------
 
 /** Ordered list of timeframes from largest to smallest (descent order). */
-const TIMEFRAME_DESCENT: Timeframe[] = ["1d", "1h", "15m", "5m", "1m"];
+const TIMEFRAME_DESCENT: Timeframe[] = [
+  "1w",
+  "1d",
+  "4h",
+  "1h",
+  "30m",
+  "15m",
+  "5m",
+  "3m",
+  "1m",
+];
 
 /**
  * Strict timestamp containment predicate.
@@ -990,14 +1000,22 @@ function timeframeMs(tf: Dataset["timeframe"]): number {
   switch (tf) {
     case "1m":
       return 60_000;
+    case "3m":
+      return 180_000;
     case "5m":
       return 300_000;
     case "15m":
       return 900_000;
+    case "30m":
+      return 1_800_000;
     case "1h":
       return 3_600_000;
+    case "4h":
+      return 14_400_000;
     case "1d":
       return 86_400_000;
+    case "1w":
+      return 604_800_000;
     default:
       return 0;
   }

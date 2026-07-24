@@ -15,7 +15,6 @@ import { generateReport } from "@/lib/report";
 import { getSampleDataset } from "@/lib/sampleData";
 import { deriveSemanticColumnFeatures } from "@/lib/semanticColumns";
 import { validatePatterns } from "@/lib/validation";
-import type { SurvivalDataset } from "@/lib/validation";
 import { BUILTIN_CATEGORIES } from "@/types";
 import type {
   CompletedStep,
@@ -168,18 +167,26 @@ interface EngineState {
  * causes an infinite render loop in React 19.
  */
 let cachedCategoryFeatures: Feature[] | null = null;
-let cachedFeatureCategories: FeatureCategory[] = [...BUILTIN_CATEGORIES];
+let cachedCategoryCatalogs: Record<string, Feature[]> | null = null;
+let cachedFeatureCategories: FeatureCategory[] = [];
 
 export function selectFeatureCategories(state: EngineState): FeatureCategory[] {
-  if (state.features === cachedCategoryFeatures) {
+  if (
+    state.features === cachedCategoryFeatures &&
+    state.featuresByDataset === cachedCategoryCatalogs
+  ) {
     return cachedFeatureCategories;
   }
 
-  const categorySet = new Set<FeatureCategory>(BUILTIN_CATEGORIES);
-  for (const feature of state.features) {
+  const catalogs = Object.values(state.featuresByDataset);
+  const availableFeatures =
+    catalogs.length > 0 ? catalogs.flat() : state.features;
+  const categorySet = new Set<FeatureCategory>();
+  for (const feature of availableFeatures) {
     categorySet.add(feature.category);
   }
   cachedCategoryFeatures = state.features;
+  cachedCategoryCatalogs = state.featuresByDataset;
   cachedFeatureCategories = [...categorySet];
   return cachedFeatureCategories;
 }
@@ -191,19 +198,192 @@ function buildDatasetFeatures(
   dataset: Dataset,
   overrides: FeatureOverrides,
 ): { features: Feature[]; matrix: FeatureMatrix } {
-  const features = generateFeatures(dataset.bars, [], overrides);
-  const matrix = computeFeatureValues(dataset.bars, features);
+  const priceCategories = new Set<FeatureCategory>([
+    "Candle Structure",
+    "Market Structure",
+    "Sequences",
+    "Volatility",
+    "Location",
+    "Levels & Sessions",
+    "Gap",
+    "Opening Range",
+    "Bollinger",
+    "Trend",
+  ]);
+  const volumeCategories = new Set<FeatureCategory>(["VWAP", "Volume"]);
+  const allGenerated = generateFeatures(dataset.bars, [], overrides);
+  const generated = dataset.hasOHLC
+    ? allGenerated.filter(
+        (feature) =>
+          priceCategories.has(feature.category) ||
+          (dataset.hasVolume && volumeCategories.has(feature.category)) ||
+          feature.category === "Time" ||
+          feature.category === "Calendar",
+      )
+    : [];
+  // The built-in calculator is a single optimized OHLC pass. Indicator-only
+  // uploads skip it entirely and receive only semantic transformations of the
+  // fields actually present.
+  const computed = dataset.hasOHLC
+    ? computeFeatureValues(dataset.bars, allGenerated)
+    : {};
+  const features = [...generated];
+  const matrix: FeatureMatrix = Object.fromEntries(
+    generated.map((feature) => [feature.id, computed[feature.id] ?? []]),
+  );
   const semantic = deriveSemanticColumnFeatures(dataset);
   for (const column of dataset.columns) {
     column.semantic = semantic.semantics[column.key] ?? column.semantic;
   }
   features.push(...semantic.features);
   Object.assign(matrix, semantic.matrix);
-  return { features, matrix };
+  const informative = features.filter((feature) => {
+    const values = matrix[feature.id] ?? [];
+    const distinct = new Set<string | number>();
+    let present = 0;
+    for (const value of values) {
+      if (
+        value == null ||
+        (typeof value === "number" && !Number.isFinite(value))
+      ) {
+        continue;
+      }
+      present++;
+      if (distinct.size < 3) distinct.add(value);
+    }
+    return (
+      present >= Math.max(5, Math.floor(dataset.rowCount * 0.01)) &&
+      distinct.size >= 2
+    );
+  });
+  const informativeMatrix: FeatureMatrix = Object.fromEntries(
+    informative.map((feature) => [feature.id, matrix[feature.id]]),
+  );
+  return { features: informative, matrix: informativeMatrix };
 }
 
 function timeframeMinutes(dataset: Dataset): number {
   return datasetIntervalMs(dataset) / 60_000;
+}
+
+function resultIsProfitable(
+  result: ValidationResult,
+  pattern: Pattern,
+): boolean {
+  const move = result.outOfSampleMetrics.avgMove;
+  return (
+    (pattern.direction === "bullish" && move > 0) ||
+    (pattern.direction === "bearish" && move < 0) ||
+    (pattern.direction === "neutral" && move !== 0)
+  );
+}
+
+/**
+ * Validate against one additional timeline at a time and retain only scalar
+ * survival totals. This preserves cross-dataset survival without keeping an
+ * O(dataset × aligned-feature) collection of matrices alive.
+ */
+async function validateMemoryBounded(
+  target: Dataset,
+  selectedDatasets: Dataset[],
+  featuresByDataset: Record<string, Feature[]>,
+  featureValuesByDataset: Record<string, FeatureMatrix>,
+  patterns: Pattern[],
+  horizon: number,
+): Promise<ValidationResult[]> {
+  const primaryResearch = buildMultiTimeframeResearchSpace(
+    target,
+    selectedDatasets,
+    featuresByDataset,
+    featureValuesByDataset,
+  );
+  const baseResults = validatePatterns(
+    target,
+    primaryResearch.features,
+    primaryResearch.matrix,
+    patterns,
+    [],
+  );
+  const patternById = new Map(patterns.map((pattern) => [pattern.id, pattern]));
+  const totals = new Map(
+    baseResults.map((result) => {
+      const pattern = patternById.get(result.patternId);
+      const evaluated = result.outOfSampleMetrics.sampleSize > 0 ? 1 : 0;
+      return [
+        result.patternId,
+        {
+          evaluated,
+          profitable:
+            evaluated > 0 && pattern && resultIsProfitable(result, pattern)
+              ? 1
+              : 0,
+        },
+      ];
+    }),
+  );
+  const targetMinutes = timeframeMinutes(target);
+
+  for (const candidate of selectedDatasets) {
+    if (candidate.id === target.id || !featureValuesByDataset[candidate.id]) {
+      continue;
+    }
+    const candidateMatrix = buildMultiTimeframeResearchSpace(
+      candidate,
+      selectedDatasets,
+      featuresByDataset,
+      featureValuesByDataset,
+      target.id,
+    ).matrix;
+    const candidateResults = validatePatterns(
+      target,
+      primaryResearch.features,
+      primaryResearch.matrix,
+      patterns,
+      [
+        {
+          dataset: candidate,
+          matrix: candidateMatrix,
+          horizon: Math.max(
+            1,
+            Math.round((horizon * targetMinutes) / timeframeMinutes(candidate)),
+          ),
+        },
+      ],
+    );
+    for (const pairResult of candidateResults) {
+      const baseResult = baseResults.find(
+        (result) => result.patternId === pairResult.patternId,
+      );
+      const pattern = patternById.get(pairResult.patternId);
+      const total = totals.get(pairResult.patternId);
+      if (!baseResult || !pattern || !total) continue;
+      const primaryEvaluated =
+        baseResult.outOfSampleMetrics.sampleSize > 0 ? 1 : 0;
+      const primaryProfitable =
+        primaryEvaluated > 0 && resultIsProfitable(baseResult, pattern) ? 1 : 0;
+      const pairEvaluated = primaryEvaluated + 1;
+      const pairProfitable = Math.round(
+        (pairResult.crossSymbolSurvival ?? 0) * pairEvaluated,
+      );
+      total.evaluated += 1;
+      total.profitable += Math.max(
+        0,
+        Math.min(1, pairProfitable - primaryProfitable),
+      );
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+
+  return baseResults.map((result) => {
+    const total = totals.get(result.patternId);
+    return {
+      ...result,
+      crossSymbolSurvival:
+        total && total.evaluated > 0
+          ? total.profitable / total.evaluated
+          : null,
+    };
+  });
 }
 
 export const useEngineStore = create<EngineState>((set, get) => ({
@@ -353,18 +533,33 @@ export const useEngineStore = create<EngineState>((set, get) => ({
   },
 
   setTargetMode: (targetMode) => {
-    set({
+    set((state) => ({
       targetMode,
+      selectedDatasetIds:
+        targetMode === "single" &&
+        state.activeDatasetId &&
+        !state.selectedDatasetIds.includes(state.activeDatasetId)
+          ? [...state.selectedDatasetIds, state.activeDatasetId]
+          : state.selectedDatasetIds,
       patterns: [],
       validationResults: [],
       report: null,
       discoveryProgress: DEFAULT_PROGRESS,
-    });
+    }));
   },
 
   toggleDatasetSelected: (id) =>
     set((state) => {
-      if (id === state.activeDatasetId) return {};
+      if (state.targetMode === "single" && id === state.activeDatasetId) {
+        return {};
+      }
+      if (
+        state.targetMode === "all" &&
+        state.selectedDatasetIds.includes(id) &&
+        state.selectedDatasetIds.length === 1
+      ) {
+        return {};
+      }
       const completedSteps = new Set<CompletedStep>(["dataLoaded"]);
       if (state.features.length > 0 && state.featureValues) {
         completedSteps.add("featuresGenerated");
@@ -404,20 +599,22 @@ export const useEngineStore = create<EngineState>((set, get) => ({
   },
 
   generateFeaturesAction: () => {
-    const { dataset, datasets, selectedDatasetIds } = get();
+    const { dataset, datasets, selectedDatasetIds, targetMode } = get();
     if (!dataset) return;
     set({ isComputing: true, lastError: null });
     // Defer to next tick so the UI can show a loading state.
     setTimeout(() => {
       try {
-        const included = datasets.filter(
-          (candidate) =>
-            selectedDatasetIds.length === 0 ||
-            selectedDatasetIds.includes(candidate.id),
+        const included = datasets.filter((candidate) =>
+          selectedDatasetIds.includes(candidate.id),
         );
-        if (!included.some((candidate) => candidate.id === dataset.id)) {
+        if (
+          targetMode === "single" &&
+          !included.some((candidate) => candidate.id === dataset.id)
+        ) {
           included.unshift(dataset);
         }
+        if (included.length === 0) included.push(dataset);
         const featuresByDataset: Record<string, Feature[]> = {};
         const featureValuesByDataset: Record<string, FeatureMatrix> = {};
         for (const candidate of included) {
@@ -430,6 +627,13 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         }
         const features = featuresByDataset[dataset.id] ?? [];
         const featureValues = featureValuesByDataset[dataset.id] ?? null;
+        const availableCategories = [
+          ...new Set(
+            Object.values(featuresByDataset)
+              .flat()
+              .map((feature) => feature.category),
+          ),
+        ];
         const completed = new Set<CompletedStep>(get().completedSteps);
         completed.add("dataLoaded");
         completed.add("featuresGenerated");
@@ -438,6 +642,10 @@ export const useEngineStore = create<EngineState>((set, get) => ({
           featureValues,
           featuresByDataset,
           featureValuesByDataset,
+          discoveryConfig: {
+            ...get().discoveryConfig,
+            enabledCategories: availableCategories,
+          },
           isComputing: false,
           completedSteps: completed,
           // Clear downstream results since features changed.
@@ -512,8 +720,6 @@ export const useEngineStore = create<EngineState>((set, get) => ({
   runDiscoveryAction: async () => {
     const {
       dataset,
-      features,
-      featureValues,
       discoveryConfig,
       datasets,
       selectedDatasetIds,
@@ -521,33 +727,49 @@ export const useEngineStore = create<EngineState>((set, get) => ({
       featureValuesByDataset,
       targetMode,
     } = get();
-    if (!dataset || !features.length || !featureValues) return;
-    const selectedDatasets = datasets.filter(
-      (candidate) =>
-        candidate.id === dataset.id ||
-        selectedDatasetIds.includes(candidate.id),
+    if (!dataset) return;
+    if (
+      targetMode === "single" &&
+      (!featuresByDataset[dataset.id]?.length ||
+        !featureValuesByDataset[dataset.id])
+    ) {
+      return;
+    }
+    if (
+      targetMode === "all" &&
+      !selectedDatasetIds.some(
+        (id) =>
+          (featuresByDataset[id]?.length ?? 0) > 0 &&
+          featureValuesByDataset[id],
+      )
+    ) {
+      return;
+    }
+    const selectedDatasets = datasets.filter((candidate) =>
+      targetMode === "all"
+        ? selectedDatasetIds.includes(candidate.id)
+        : candidate.id === dataset.id ||
+          selectedDatasetIds.includes(candidate.id),
     );
     const targets =
       targetMode === "all" && selectedDatasets.length > 1
         ? selectedDatasets
         : [dataset];
-    const previewResearch = buildMultiTimeframeResearchSpace(
-      targets[0],
-      selectedDatasets,
-      featuresByDataset,
-      featureValuesByDataset,
-    );
-
     cancelFlag = { cancelled: false };
     set({
       isComputing: true,
       lastError: null,
       discoveryProgress: { ...DEFAULT_PROGRESS, isRunning: true },
       patterns: [],
-      researchFeatures: previewResearch.features,
-      researchFeatureValues: previewResearch.matrix,
-      researchContextDatasetIds: previewResearch.contextDatasetIds,
-      researchTotalBars: previewResearch.totalSourceBars,
+      researchFeatures: [],
+      researchFeatureValues: null,
+      researchContextDatasetIds: selectedDatasets
+        .filter((candidate) => candidate.id !== targets[0].id)
+        .map((candidate) => candidate.id),
+      researchTotalBars: selectedDatasets.reduce(
+        (sum, candidate) => sum + candidate.rowCount,
+        0,
+      ),
     });
 
     try {
@@ -583,6 +805,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
           },
           () => cancelFlag.cancelled,
           get().featureOverrides,
+          target.outcomeLabel,
         );
         if (cancelFlag.cancelled) break;
         const tagged = discovered.map((pattern) => ({
@@ -592,37 +815,26 @@ export const useEngineStore = create<EngineState>((set, get) => ({
           targetDatasetLabel: targetLabel,
           targetTimeframe: target.timeframe,
         }));
-        const activeMinutes = timeframeMinutes(target);
-        const additionalDatasets: SurvivalDataset[] = selectedDatasets
-          .filter(
-            (candidate) =>
-              candidate.id !== target.id &&
-              featureValuesByDataset[candidate.id],
-          )
-          .map((candidate) => ({
-            dataset: candidate,
-            matrix: buildMultiTimeframeResearchSpace(
-              candidate,
-              selectedDatasets,
-              featuresByDataset,
-              featureValuesByDataset,
-              target.id,
-            ).matrix,
-            horizon: Math.max(
-              1,
-              Math.round(
-                (discoveryConfig.horizon * activeMinutes) /
-                  timeframeMinutes(candidate),
-              ),
-            ),
-          }));
-        const validation = validatePatterns(
-          target,
-          research.features,
-          research.matrix,
-          tagged.slice(0, 20),
-          additionalDatasets,
-        );
+        // Unified mode already makes every selected timeline a target pass.
+        // Explicit-target mode additionally computes cross-source survival,
+        // but does so one aligned timeline at a time.
+        const validation =
+          targetMode === "single"
+            ? await validateMemoryBounded(
+                target,
+                selectedDatasets,
+                featuresByDataset,
+                featureValuesByDataset,
+                tagged.slice(0, 20),
+                discoveryConfig.horizon,
+              )
+            : validatePatterns(
+                target,
+                research.features,
+                research.matrix,
+                tagged.slice(0, 20),
+                [],
+              );
         const validationByPattern = new Map(
           validation.map((result) => [result.patternId, result]),
         );
@@ -680,109 +892,80 @@ export const useEngineStore = create<EngineState>((set, get) => ({
     }
   },
 
-  validateAction: () => {
+  validateAction: async () => {
     const {
       dataset,
       datasets,
       selectedDatasetIds,
-      features,
-      featureValues,
+      featuresByDataset,
       featureValuesByDataset,
       patterns,
       discoveryConfig,
-      researchFeatures,
-      researchFeatureValues,
+      targetMode,
     } = get();
-    if (!dataset || !features.length || !featureValues || !patterns.length)
-      return;
+    if (!dataset || !patterns.length) return;
     set({ isComputing: true, lastError: null });
-    setTimeout(() => {
-      try {
-        const topPatterns = patterns.slice(0, 20);
-        const selectedDatasets = datasets.filter(
-          (candidate) =>
-            candidate.id === dataset.id ||
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    try {
+      const topPatterns = patterns.slice(0, 20);
+      const selectedDatasets = datasets.filter((candidate) =>
+        targetMode === "all"
+          ? selectedDatasetIds.includes(candidate.id)
+          : candidate.id === dataset.id ||
             selectedDatasetIds.includes(candidate.id),
-        );
-        const primaryResearch =
-          researchFeatures.length > 0 && researchFeatureValues
-            ? {
-                features: researchFeatures,
-                matrix: researchFeatureValues,
-              }
-            : buildMultiTimeframeResearchSpace(
-                dataset,
-                selectedDatasets,
-                get().featuresByDataset,
-                featureValuesByDataset,
-              );
-        const activeMinutes = timeframeMinutes(dataset);
-        const additionalDatasets: SurvivalDataset[] = datasets
-          .filter(
-            (candidate) =>
-              candidate.id !== dataset.id &&
-              selectedDatasetIds.includes(candidate.id) &&
-              featureValuesByDataset[candidate.id],
-          )
-          .map((candidate) => {
-            const candidateResearch = buildMultiTimeframeResearchSpace(
-              candidate,
-              selectedDatasets,
-              get().featuresByDataset,
-              featureValuesByDataset,
-              dataset.id,
-            );
-            return {
-              dataset: candidate,
-              matrix: candidateResearch.matrix,
-              horizon: Math.max(
-                1,
-                Math.round(
-                  (discoveryConfig.horizon * activeMinutes) /
-                    timeframeMinutes(candidate),
-                ),
-              ),
-            };
-          });
-        const results = validatePatterns(
-          dataset,
-          primaryResearch.features,
-          primaryResearch.matrix,
-          topPatterns,
-          additionalDatasets,
-        );
-        const completed = new Set<CompletedStep>(get().completedSteps);
-        completed.add("validationComplete");
-        const validationByPattern = new Map(
-          results.map((result) => [result.patternId, result]),
-        );
-        set({
-          validationResults: results,
-          patterns: patterns.map((pattern) => {
-            const validation = validationByPattern.get(pattern.id);
-            if (!validation) {
-              return pattern;
-            }
-            return {
-              ...pattern,
-              validationStatus: validation.degraded
-                ? ("degraded" as const)
-                : ("held" as const),
-              confidence: validation.degraded
-                ? ("low" as const)
-                : pattern.confidence,
-            };
-          }),
-          isComputing: false,
-          completedSteps: completed,
-        });
-      } catch (e) {
-        set({
-          isComputing: false,
-          lastError: e instanceof Error ? e.message : "Validation failed.",
-        });
+      );
+      const patternsByTarget = new Map<string, Pattern[]>();
+      for (const pattern of topPatterns) {
+        const targetId = pattern.targetDatasetId ?? dataset.id;
+        const group = patternsByTarget.get(targetId) ?? [];
+        group.push(pattern);
+        patternsByTarget.set(targetId, group);
       }
-    }, 10);
+      const results: ValidationResult[] = [];
+      for (const [targetId, targetPatterns] of patternsByTarget) {
+        const target =
+          selectedDatasets.find((candidate) => candidate.id === targetId) ??
+          dataset;
+        results.push(
+          ...(await validateMemoryBounded(
+            target,
+            selectedDatasets,
+            featuresByDataset,
+            featureValuesByDataset,
+            targetPatterns,
+            discoveryConfig.horizon,
+          )),
+        );
+      }
+      const completed = new Set<CompletedStep>(get().completedSteps);
+      completed.add("validationComplete");
+      const validationByPattern = new Map(
+        results.map((result) => [result.patternId, result]),
+      );
+      set({
+        validationResults: results,
+        patterns: patterns.map((pattern) => {
+          const validation = validationByPattern.get(pattern.id);
+          if (!validation) return pattern;
+          return {
+            ...pattern,
+            validationStatus: validation.degraded
+              ? ("degraded" as const)
+              : ("held" as const),
+            confidence: validation.degraded
+              ? ("low" as const)
+              : pattern.confidence,
+          };
+        }),
+        isComputing: false,
+        completedSteps: completed,
+      });
+    } catch (e) {
+      set({
+        isComputing: false,
+        lastError: e instanceof Error ? e.message : "Validation failed.",
+      });
+    }
   },
 
   generateReportAction: () => {
@@ -1043,6 +1226,12 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         originalColumns: [],
         columns: [],
         timeframe: "unknown" as const,
+        intervalMs: 0,
+        instrumentKey: d.name.toLowerCase().replace(/[^a-z0-9]+/g, "_"),
+        hasOHLC: false,
+        hasVolume: false,
+        outcomeColumnKey: "",
+        outcomeLabel: "uploaded value",
         dateRange: { start: 0, end: 0 },
         rowCount: 0,
       }));

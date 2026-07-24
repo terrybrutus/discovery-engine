@@ -89,19 +89,32 @@ export default function PatternDiscoveryPage() {
   const [deletingRunId, setDeletingRunId] = useState<number | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  const featuresAvailable = features.length > 0;
+  const featuresAvailable =
+    targetMode === "all"
+      ? selectedDatasetIds.some(
+          (datasetId) => (featuresByDataset[datasetId]?.length ?? 0) > 0,
+        )
+      : features.length > 0;
   const isRunning = discoveryProgress.isRunning || isComputing;
   const hasRun = completedSteps.has("discoveryComplete");
   const hasResults = patterns.length > 0;
-  const selectedResearchDatasets = datasets.filter(
-    (item) =>
-      item.id === activeDatasetId || selectedDatasetIds.includes(item.id),
+  const selectedResearchDatasets = datasets.filter((item) =>
+    targetMode === "all"
+      ? selectedDatasetIds.includes(item.id)
+      : item.id === activeDatasetId || selectedDatasetIds.includes(item.id),
   );
   const previewContextCount = Math.max(0, selectedResearchDatasets.length - 1);
   const previewFeatureCount = selectedResearchDatasets.reduce(
     (sum, item) => sum + (featuresByDataset[item.id]?.length ?? 0),
     0,
   );
+  const uniqueCapabilityCount = new Set(
+    selectedResearchDatasets.flatMap((item) =>
+      (featuresByDataset[item.id] ?? []).map(
+        (feature) => `${feature.category}:${feature.id}`,
+      ),
+    ),
+  ).size;
 
   const handleDiscoveryRun = async (): Promise<void> => {
     await runDiscoveryAction();
@@ -237,7 +250,7 @@ export default function PatternDiscoveryPage() {
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[20rem_1fr]">
         {/* ---- Controls panel ---- */}
-        <aside className="lg:sticky lg:top-4 lg:self-start">
+        <aside className="lg:self-start">
           <Card className="gap-0 py-0">
             <CardHeader className="border-b border-border px-5 py-4">
               <CardTitle className="flex items-center gap-2 font-display text-sm font-semibold uppercase tracking-wide">
@@ -260,14 +273,18 @@ export default function PatternDiscoveryPage() {
 
         {/* ---- Main column: dataset selector + progress + results ---- */}
         <section className="flex min-w-0 flex-col gap-4">
-          {/* One dataset supplies outcomes; every checked dataset supplies
-              causally aligned context without leaving the page. */}
+          {/* Every included dataset participates by default. Explicit target
+              mode is available only when the user chooses one timeline. */}
           <DatasetSelector
             datasets={datasets}
             activeDatasetId={activeDatasetId}
-            onSelect={setActiveDataset}
+            onSelect={(id) => {
+              setActiveDataset(id);
+              setTargetMode("single");
+            }}
             selectedDatasetIds={selectedDatasetIds}
             onToggleSelected={toggleDatasetSelected}
+            targetMode={targetMode}
           />
 
           <div className="grid grid-cols-2 gap-2 rounded-md border border-border bg-card p-2">
@@ -305,12 +322,12 @@ export default function PatternDiscoveryPage() {
 
           <div className="grid gap-3 rounded-md border border-primary/25 bg-primary/5 px-4 py-3 text-sm sm:grid-cols-3">
             <div>
-              <div className="text-xs text-muted-foreground">
-                Prediction target
-              </div>
+              <div className="text-xs text-muted-foreground">Outcome scope</div>
               <div className="font-medium text-foreground">
                 {targetMode === "all"
-                  ? `All ${selectedResearchDatasets.length} selected datasets`
+                  ? `${selectedResearchDatasets.length} bounded target ${
+                      selectedResearchDatasets.length === 1 ? "pass" : "passes"
+                    }`
                   : (datasets.find((item) => item.id === activeDatasetId)
                       ?.label ?? "Active dataset")}
               </div>
@@ -320,11 +337,15 @@ export default function PatternDiscoveryPage() {
                 Causally aligned context
               </div>
               <div className="font-mono text-foreground">
-                {researchContextDatasetIds.length || previewContextCount}{" "}
-                additional dataset
-                {(researchContextDatasetIds.length || previewContextCount) === 1
-                  ? ""
-                  : "s"}
+                {targetMode === "all"
+                  ? `up to ${previewContextCount} sources per pass`
+                  : `${researchContextDatasetIds.length || previewContextCount} additional ${
+                      (
+                        researchContextDatasetIds.length || previewContextCount
+                      ) === 1
+                        ? "source"
+                        : "sources"
+                    }`}
               </div>
             </div>
             <div>
@@ -338,12 +359,20 @@ export default function PatternDiscoveryPage() {
                     .filter((item) => selectedDatasetIds.includes(item.id))
                     .reduce((sum, item) => sum + item.rowCount, 0)
                 ).toLocaleString()}{" "}
-                source bars ·{" "}
-                {researchFeatures.length ||
-                  previewFeatureCount ||
-                  features.length}{" "}
-                features
+                source observations ·{" "}
+                {targetMode === "all"
+                  ? `${uniqueCapabilityCount} unique capabilities`
+                  : `${
+                      researchFeatures.length ||
+                      previewFeatureCount ||
+                      features.length
+                    } features`}
               </div>
+              {targetMode === "all" ? (
+                <div className="mt-1 text-[11px] text-muted-foreground">
+                  Screened lazily to the strongest 1,200 per target pass
+                </div>
+              ) : null}
             </div>
           </div>
 
@@ -436,7 +465,7 @@ export default function PatternDiscoveryPage() {
             <EmptyState
               icon={Search}
               title="Ready to discover patterns"
-              description="Set your filters on the left, then run discovery. The engine will test thousands of condition combinations, require lift over the matching baseline, and automatically validate the strongest candidates out of sample and across selected datasets."
+              description="Set your filters on the left, then run discovery. The engine tests bounded condition combinations, requires lift over the matching baseline, and checks each target chronologically out of sample. The Validation page then measures cross-source survival one timeline at a time."
               hint="Runtime scales with the number of bars, features, and combinations selected."
               actionLabel="Run discovery"
               onAction={() => void handleDiscoveryRun()}
@@ -720,9 +749,9 @@ function PageHeading() {
           </h1>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          Discover relative price context, market structure, ordered events, and
-          cross-timeframe conditions across every selected dataset. The active
-          file supplies the future outcome; context is aligned without
+          Discover relationships supported by the uploaded fields across the
+          unified selected universe. Every source supplies outcomes in its own
+          pass by default, with cross-timeframe context aligned without
           look-ahead.
         </p>
       </div>

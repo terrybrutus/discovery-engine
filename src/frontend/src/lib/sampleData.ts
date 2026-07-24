@@ -178,6 +178,12 @@ export function getSampleDataset(): Dataset {
       volume: bars.map((b) => b.volume),
     },
     timeframe: "5m",
+    intervalMs: 5 * 60_000,
+    instrumentKey: "nq_futures",
+    hasOHLC: true,
+    hasVolume: true,
+    outcomeColumnKey: "close",
+    outcomeLabel: "close price",
     dateRange: {
       start: bars[0].timestamp,
       end: bars[bars.length - 1].timestamp,
