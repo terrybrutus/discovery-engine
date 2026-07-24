@@ -1,0 +1,22 @@
+{
+  "overview": "A trading pattern discovery engine that loads market data, generates features, finds patterns, validates them, and reports results with Internet Identity persistence.",
+  "features": [
+    "Fix the black-screen crash with recoverable error boundaries",
+    "Direction-adjusted MFE/MAE ratio for bearish and bullish patterns",
+    "MFE/MAE ratio filter with Off, Positive-only, and Auto-find modes",
+    "Hold-window auto-find that grid-searches the best setting",
+    "Per-feature manual range overrides complementing auto-quartile bucketing",
+    "Save and load discovery runs with Internet Identity login",
+    "Completed Validation tab with cross-symbol survival and breakdown panel",
+    "Rebuilt Report tab as a structured readable document"
+  ],
+  "category": "productivity",
+  "tags": [
+    "trading",
+    "discovery",
+    "pattern-recognition",
+    "data-analysis",
+    "internet-identity"
+  ],
+  "last_updated": "2026-07-24T00:32:37.704Z"
+}

@@ -1,0 +1,1469 @@
+import type { FeatureOverrides } from "@/lib/features";
+import type {
+  Condition,
+  Confidence,
+  Dataset,
+  Direction,
+  DiscoveryConfig,
+  DiscoveryProgress,
+  Feature,
+  FeatureMatrix,
+  OHLCVBar,
+  Pattern,
+  PatternCoverage,
+  PatternMetrics,
+} from "@/types";
+
+// ---------------------------------------------------------------------------
+// Pattern discovery engine.
+// Generates combinations of 2-6 conditions across enabled features, finds all
+// bars matching ALL conditions, measures forward return outcome, and ranks
+// patterns by statistical strength. Supports cancellation + progress.
+//
+// The main loop is async and yields to the main thread between chunks via
+// real setTimeout(0) awaits so large datasets do not freeze the tab.
+// Combination generation is lazy and capped so millions of arrays are never
+// materialized in memory.
+//
+// MFE/MAE proxy: the engine measures raw up/down excursions per bar
+// (upExcursion = maxHigh − entry, downExcursion = entry − minLow). The
+// favorable/adverse labeling is direction-adjusted in evaluatePattern based
+// on the pattern's dominant direction: bullish patterns keep
+// MFE = upExcursion, MAE = downExcursion; bearish patterns flip to
+// MFE = downExcursion, MAE = upExcursion so the ratio stays meaningful for
+// short-side setups. The proxy labeling (long-side vs direction-adjusted)
+// is a UI concern; the engine only computes the raw excursion values.
+// ---------------------------------------------------------------------------
+
+export interface DiscoveryRunHandle {
+  patterns: Pattern[];
+}
+
+interface FeatureLookup {
+  feature: Feature;
+  values: (number | string | undefined)[];
+}
+
+function confidenceRating(winRate: number, sampleSize: number): Confidence {
+  // Margin-aware confidence: needs both a strong edge and enough samples.
+  const margin = winRate - 50; // for directional accuracy
+  if (sampleSize < 30) return "low";
+  if (sampleSize < 100) {
+    if (margin >= 15) return "moderate";
+    return "low";
+  }
+  if (sampleSize < 300) {
+    if (margin >= 12) return "high";
+    if (margin >= 8) return "moderate";
+    return "low";
+  }
+  if (margin >= 15) return "very high";
+  if (margin >= 10) return "high";
+  if (margin >= 6) return "moderate";
+  return "low";
+}
+
+function scorePattern(
+  _winRate: number,
+  sampleSize: number,
+  margin: number,
+): number {
+  // Composite: confidence-weighted. Sample size contributes logarithmically.
+  const sampleFactor = Math.log10(Math.max(10, sampleSize)) / 4; // ~0.25-1.0
+  const edgeFactor = Math.max(0, margin) / 25; // 0-1 for 0-25pp edge
+  return sampleFactor * 0.4 + edgeFactor * 0.6;
+}
+
+/**
+ * Measure the forward outcome for a single entry bar.
+ *
+ * `horizon` is the forward window used for the win/loss outcome (the close
+ * at `entryIdx + horizon` vs the entry close). `mfeMaeWindow` is a separate
+ * forward window used only for the MFE/MAE excursion proxy; when omitted it
+ * falls back to `horizon` so callers that don't care about a split window get
+ * the original behavior.
+ *
+ * Returns raw excursions, not pre-assigned MFE/MAE:
+ *   upExcursion   = maxHigh − entry  (how far price ran up)
+ *   downExcursion = entry − minLow   (how far price ran down)
+ * The favorable/adverse assignment is direction-adjusted later in
+ * evaluatePattern based on the pattern's dominant direction, so the ratio
+ * stays meaningful for bearish patterns. The proxy labeling is a UI concern;
+ * the engine only computes the raw excursion values.
+ */
+function measureOutcome(
+  bars: OHLCVBar[],
+  entryIdx: number,
+  horizon: number,
+  mfeMaeWindow?: number,
+): {
+  ret: number;
+  upExcursion: number;
+  downExcursion: number;
+  direction: Direction;
+} | null {
+  const exitIdx = entryIdx + horizon;
+  if (exitIdx >= bars.length) return null;
+  const entry = bars[entryIdx].close;
+  const mfeWindow = mfeMaeWindow ?? horizon;
+  // The MFE/MAE window is bounded by the available bars; if it would run
+  // past the dataset, clamp to the last bar so we still get a reading.
+  const mfeEnd = Math.min(entryIdx + mfeWindow, bars.length - 1);
+  let maxHigh = entry;
+  let minLow = entry;
+  for (let k = entryIdx + 1; k <= mfeEnd; k++) {
+    if (bars[k].high > maxHigh) maxHigh = bars[k].high;
+    if (bars[k].low < minLow) minLow = bars[k].low;
+  }
+  const exit = bars[exitIdx].close;
+  const ret = exit - entry;
+  const upExcursion = maxHigh - entry; // how far price ran up
+  const downExcursion = entry - minLow; // how far price ran down
+  // Direction is determined by the sign of the average move across matches;
+  // here we just return the per-bar direction for aggregation.
+  const direction: Direction =
+    ret > 0 ? "bullish" : ret < 0 ? "bearish" : "neutral";
+  return { ret, upExcursion, downExcursion, direction };
+}
+
+/**
+ * Compute the MFE:MAE ratio = avgMFE / avgMAE, guarded against zero MAE.
+ * Returns +Infinity when avgMAE is zero and avgMFE is positive (a pattern
+ * with no adverse excursion is maximally favorable), and 0 when both are
+ * zero. Callers that need a finite number should clamp before comparison.
+ */
+export function computeMfeMaeRatio(avgMFE: number, avgMAE: number): number {
+  if (avgMAE === 0) {
+    return avgMFE > 0 ? Number.POSITIVE_INFINITY : 0;
+  }
+  return avgMFE / avgMAE;
+}
+
+function conditionMatches(
+  cond: Condition,
+  lookup: FeatureLookup,
+  barIdx: number,
+): boolean {
+  const v = lookup.values[barIdx];
+  if (v == null) return false;
+  if (lookup.feature.type === "categorical") {
+    const label = String(v);
+    switch (cond.operator) {
+      case "eq":
+        return label === cond.bucketLabel;
+      case "neq":
+        return label !== cond.bucketLabel;
+      default:
+        return false;
+    }
+  }
+  // numeric
+  const n = typeof v === "number" ? v : Number(v);
+  if (Number.isNaN(n)) return false;
+  switch (cond.operator) {
+    case "gt":
+      return n > (cond.value ?? 0);
+    case "gte":
+      return n >= (cond.value ?? 0);
+    case "lt":
+      return n < (cond.value ?? 0);
+    case "lte":
+      return n <= (cond.value ?? 0);
+    case "between":
+      return n >= (cond.value ?? 0) && n <= (cond.highValue ?? 0);
+    default:
+      return false;
+  }
+}
+
+function matchesAll(
+  conditions: Condition[],
+  lookups: Map<string, FeatureLookup>,
+  barIdx: number,
+): boolean {
+  for (const c of conditions) {
+    const lk = lookups.get(c.featureId);
+    if (!lk || !conditionMatches(c, lk, barIdx)) return false;
+  }
+  return true;
+}
+
+interface EvalResult {
+  metrics: PatternMetrics;
+  matches: number[];
+  mfeMaeRatio: number;
+}
+
+function evaluatePattern(
+  bars: OHLCVBar[],
+  conditions: Condition[],
+  lookups: Map<string, FeatureLookup>,
+  horizon: number,
+  mfeMaeWindow?: number,
+): EvalResult | null {
+  const matches: number[] = [];
+  // Pre-filter: only scan bars where all features are defined.
+  for (let i = 0; i < bars.length - horizon; i++) {
+    if (matchesAll(conditions, lookups, i)) matches.push(i);
+  }
+  if (matches.length === 0) return null;
+
+  let sumRet = 0;
+  let sumUpExcursion = 0;
+  let sumDownExcursion = 0;
+  let bullCount = 0;
+  let bearCount = 0;
+  // Cache per-match outcomes so we don't recompute during the win-rate pass.
+  const outcomes: { ret: number; direction: Direction }[] = new Array(
+    matches.length,
+  );
+  for (let m = 0; m < matches.length; m++) {
+    const idx = matches[m];
+    const o = measureOutcome(bars, idx, horizon, mfeMaeWindow);
+    if (!o) {
+      outcomes[m] = { ret: 0, direction: "neutral" };
+      continue;
+    }
+    sumRet += o.ret;
+    sumUpExcursion += o.upExcursion;
+    sumDownExcursion += o.downExcursion;
+    if (o.direction === "bullish") bullCount++;
+    else if (o.direction === "bearish") bearCount++;
+    outcomes[m] = { ret: o.ret, direction: o.direction };
+  }
+  const n = matches.length;
+  const avgMove = sumRet / n;
+  const avgUpExcursion = sumUpExcursion / n;
+  const avgDownExcursion = sumDownExcursion / n;
+  // Win rate = directional accuracy: fraction of bars that moved in the
+  // pattern's dominant direction.
+  const direction: Direction = bullCount >= bearCount ? "bullish" : "bearish";
+  let directionalWins = 0;
+  for (let m = 0; m < matches.length; m++) {
+    const o = outcomes[m];
+    if (direction === "bullish" && o.ret > 0) directionalWins++;
+    else if (direction === "bearish" && o.ret < 0) directionalWins++;
+  }
+  const winRate = (directionalWins / n) * 100;
+  // Direction-adjusted MFE/MAE: bullish patterns keep the long-side proxy
+  // (MFE = up excursion, MAE = down excursion); bearish patterns flip so
+  // the favorable excursion is the down move and the adverse excursion is
+  // the up move. This keeps the MFE:MAE ratio meaningful for short setups.
+  const avgMFE = direction === "bearish" ? avgDownExcursion : avgUpExcursion;
+  const avgMAE = direction === "bearish" ? avgUpExcursion : avgDownExcursion;
+  const mfeMaeRatio = computeMfeMaeRatio(avgMFE, avgMAE);
+
+  return {
+    metrics: {
+      winRate,
+      avgMove,
+      avgMAE,
+      avgMFE,
+      sampleSize: n,
+      direction,
+    },
+    matches,
+    mfeMaeRatio,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Plain-English translation.
+// Produces a natural sentence for each condition and a full pattern sentence.
+// Built-in features use template-driven phrasing keyed by feature id; custom
+// uploaded columns fall back to a raw "<column name> is above threshold" form.
+// ---------------------------------------------------------------------------
+
+/** A natural-language fragment for a single condition, e.g. "RVOL is High". */
+function conditionPhrase(
+  cond: Condition,
+  feature: Feature | undefined,
+): string {
+  const fname = feature?.name ?? cond.featureId;
+  const isCustom = feature?.source === "custom";
+
+  if (feature?.type === "categorical") {
+    if (cond.operator === "eq") return `${fname} is ${cond.bucketLabel}`;
+    if (cond.operator === "neq") return `${fname} is not ${cond.bucketLabel}`;
+  }
+
+  // Numeric conditions. For custom columns we keep the phrasing concrete and
+  // reference the column name directly rather than a feature-code label.
+  const v = cond.value ?? 0;
+  const hv = cond.highValue ?? 0;
+  if (isCustom) {
+    switch (cond.operator) {
+      case "gt":
+        return `${fname} is above ${v}`;
+      case "gte":
+        return `${fname} is at or above ${v}`;
+      case "lt":
+        return `${fname} is below ${v}`;
+      case "lte":
+        return `${fname} is at or below ${v}`;
+      case "between":
+        return `${fname} is between ${v} and ${hv}`;
+      default:
+        return `${fname} matches a threshold`;
+    }
+  }
+
+  switch (cond.operator) {
+    case "gt":
+      return `${fname} is above ${v}`;
+    case "gte":
+      return `${fname} is at or above ${v}`;
+    case "lt":
+      return `${fname} is below ${v}`;
+    case "lte":
+      return `${fname} is at or below ${v}`;
+    case "between":
+      return `${fname} is between ${v} and ${hv}`;
+    default:
+      return fname;
+  }
+}
+
+/** Build the full plain-English sentence for a pattern. */
+export function buildPlainEnglishSentence(
+  conditions: Condition[],
+  features: Feature[],
+  direction: Direction,
+  horizon: number,
+): string {
+  const byId = new Map(features.map((f) => [f.id, f]));
+  const clauses = conditions.map((c) =>
+    conditionPhrase(c, byId.get(c.featureId)),
+  );
+  // Join clauses with ", " and insert " and " before the last one for natural
+  // reading. Two clauses → "A and B". Three+ → "A, B and C".
+  let joined: string;
+  if (clauses.length === 1) {
+    joined = clauses[0];
+  } else if (clauses.length === 2) {
+    joined = `${clauses[0]} and ${clauses[1]}`;
+  } else {
+    joined = `${clauses.slice(0, -1).join(", ")} and ${clauses[clauses.length - 1]}`;
+  }
+
+  const tendency =
+    direction === "bullish"
+      ? "rise"
+      : direction === "bearish"
+        ? "fall"
+        : "move";
+  return `When ${joined}, price tends to ${tendency} over the next ${horizon} bars.`;
+}
+
+function conditionLabel(cond: Condition, feature: Feature | undefined): string {
+  const fname = feature?.name ?? cond.featureId;
+  if (feature?.type === "categorical") {
+    if (cond.operator === "eq") return `${fname} is ${cond.bucketLabel}`;
+    if (cond.operator === "neq") return `${fname} is not ${cond.bucketLabel}`;
+  }
+  switch (cond.operator) {
+    case "gt":
+      return `${fname} > ${cond.value}`;
+    case "gte":
+      return `${fname} ≥ ${cond.value}`;
+    case "lt":
+      return `${fname} < ${cond.value}`;
+    case "lte":
+      return `${fname} ≤ ${cond.value}`;
+    case "between":
+      return `${fname} between ${cond.value} and ${cond.highValue}`;
+    default:
+      return fname;
+  }
+}
+
+function patternLabel(conditions: Condition[], features: Feature[]): string {
+  const byId = new Map(features.map((f) => [f.id, f]));
+  return `When ${conditions
+    .map((c) => conditionLabel(c, byId.get(c.featureId)))
+    .join(" AND ")}`;
+}
+
+/**
+ * Generate candidate conditions from enabled features.
+ *
+ * Per-feature manual overrides (FeatureOverrides) complement the default
+ * auto-quartile bucketing. For each numeric feature:
+ *   - If an override provides `thresholds`, those values replace the
+ *     auto-quartile thresholds (each generates both `lt` and `gt`).
+ *   - Else if an override provides `ranges`, each `{low, high}` pair generates
+ *     a `between` candidate (and the auto-quartile `lt`/`gt` candidates are
+ *     dropped for that feature).
+ *   - Else if an override provides a `range` hint, that [min, max] is used
+ *     for auto-quartile threshold generation instead of `feat.range`.
+ *   - Else fall back to `feat.range` (auto-quartile) as before.
+ * Features without an override keep the auto-quartile default.
+ */
+function generateCandidates(
+  features: Feature[],
+  matrix: FeatureMatrix,
+  _bars: OHLCVBar[],
+  overrides: FeatureOverrides = {},
+): Condition[] {
+  const candidates: Condition[] = [];
+  for (const feat of features) {
+    if (!feat.enabled) continue;
+    if (feat.type === "categorical" && feat.buckets) {
+      for (const b of feat.buckets) {
+        candidates.push({ featureId: feat.id, operator: "eq", bucketLabel: b });
+      }
+    } else if (feat.type === "numeric") {
+      const ov = overrides[feat.id];
+      // Explicit threshold overrides replace auto-quartile thresholds.
+      if (ov?.thresholds && ov.thresholds.length > 0) {
+        for (const t of ov.thresholds) {
+          candidates.push({ featureId: feat.id, operator: "lt", value: t });
+          candidates.push({ featureId: feat.id, operator: "gt", value: t });
+        }
+        // Explicit range boundaries generate `between` candidates.
+        if (ov.ranges && ov.ranges.length > 0) {
+          for (const r of ov.ranges) {
+            candidates.push({
+              featureId: feat.id,
+              operator: "between",
+              value: r.low,
+              highValue: r.high,
+            });
+          }
+        }
+        continue;
+      }
+      // Explicit range boundaries (without threshold overrides) generate
+      // `between` candidates and skip the auto-quartile lt/gt set.
+      if (ov?.ranges && ov.ranges.length > 0) {
+        for (const r of ov.ranges) {
+          candidates.push({
+            featureId: feat.id,
+            operator: "between",
+            value: r.low,
+            highValue: r.high,
+          });
+        }
+        continue;
+      }
+      // Auto-quartile bucketing. Use the override's range hint when present,
+      // else feat.range, else derive from data.
+      const rangeHint = ov?.range ?? feat.range;
+      if (rangeHint) {
+        const [lo, hi] = rangeHint;
+        const span = hi - lo;
+        // 4 quantile-style thresholds per numeric feature.
+        for (let q = 1; q <= 4; q++) {
+          const t = lo + (span * q) / 5;
+          candidates.push({ featureId: feat.id, operator: "lt", value: t });
+          candidates.push({ featureId: feat.id, operator: "gt", value: t });
+        }
+      } else {
+        // No declared range — derive from data using a reduce-based min/max to
+        // avoid spreading a large array into Math.min/Math.max (RangeError on
+        // very large datasets).
+        const vals = (matrix[feat.id] ?? []).filter(
+          (v): v is number => typeof v === "number" && !Number.isNaN(v),
+        );
+        if (vals.length === 0) continue;
+        let min = Number.POSITIVE_INFINITY;
+        let max = Number.NEGATIVE_INFINITY;
+        for (const v of vals) {
+          if (v < min) min = v;
+          if (v > max) max = v;
+        }
+        const span = max - min || 1;
+        for (let q = 1; q <= 4; q++) {
+          const t = min + (span * q) / 5;
+          candidates.push({ featureId: feat.id, operator: "lt", value: t });
+          candidates.push({ featureId: feat.id, operator: "gt", value: t });
+        }
+      }
+    }
+  }
+  // Dedupe identical conditions.
+  const seen = new Set<string>();
+  const out: Condition[] = [];
+  for (const c of candidates) {
+    const key = JSON.stringify(c);
+    if (!seen.has(key)) {
+      seen.add(key);
+      out.push(c);
+    }
+  }
+  return out;
+}
+
+/**
+ * Lazy k-combination generator. Yields one combination at a time and never
+ * materializes the full binomial set in memory. Stops early once `maxResults`
+ * combinations have been yielded, so nCk in the millions never allocates
+ * millions of arrays.
+ *
+ * The stride-sampling for the cap is deterministic and evenly distributed:
+ * when the total nCk exceeds the cap, we walk the combination space in a
+ * fixed stride and only yield every stride-th combination.
+ */
+export function* iterateCombinations<T>(
+  arr: T[],
+  k: number,
+  maxResults: number,
+): Generator<T[], void, unknown> {
+  const n = arr.length;
+  if (k > n || k <= 0 || maxResults <= 0) return;
+
+  // Total number of combinations (nCk), capped at MAX_SAFE_INTEGER.
+  const total = binomial(n, k);
+  if (total <= maxResults) {
+    // Yield every combination in lexicographic order.
+    const idx = Array.from({ length: k }, (_, i) => i);
+    let yielded = 0;
+    while (true) {
+      yield idx.map((i) => arr[i]);
+      yielded++;
+      let i = k - 1;
+      while (i >= 0 && idx[i] === n - k + i) i--;
+      if (i < 0) break;
+      idx[i]++;
+      for (let j = i + 1; j < k; j++) idx[j] = idx[j - 1] + 1;
+    }
+    void yielded;
+    return;
+  }
+
+  // Stride sampling: walk the lexicographic combination sequence but only
+  // yield every `stride`-th combination, so we emit exactly maxResults evenly
+  // spaced combinations without materializing the full set.
+  const stride = total / maxResults;
+  // We advance the lexicographic index by `stride` between yields. To do that
+  // without enumerating every combination, we use the combinatorial number
+  // system: convert a target rank into a combination directly.
+  for (let s = 0; s < maxResults; s++) {
+    const targetRank = Math.floor(s * stride);
+    yield rankToCombination(arr, k, targetRank);
+  }
+}
+
+/**
+ * Convert a lexicographic rank (0-based) into the corresponding k-combination
+ * of `arr` using the combinatorial number system. This lets us jump directly
+ * to the s-th sampled combination without enumerating the ones in between.
+ */
+function rankToCombination<T>(arr: T[], k: number, rank: number): T[] {
+  const n = arr.length;
+  const out: T[] = [];
+  let r = rank;
+  // Choose indices c[0] < c[1] < ... < c[k-1] such that the rank equals
+  // sum_{i=0}^{k-1} C(c[i], i+1). Walk from the largest position down.
+  let x = n;
+  for (let i = k - 1; i >= 0; i--) {
+    // Find the largest c < x such that C(c, i+1) <= r.
+    let c = x - 1;
+    while (c >= 0 && binomial(c, i + 1) > r) c--;
+    if (c < 0) c = i; // defensive floor
+    out.unshift(arr[c]);
+    r -= binomial(c, i + 1);
+    x = c;
+  }
+  return out;
+}
+
+/**
+ * Resolve the effective MFE/MAE ratio mode, honoring the new
+ * `mfeMaeRatioMode` field with backward-compat fallback to the legacy
+ * `mfeMaeRatioEnabled` boolean.
+ *   - mode === "off"      → no ratio filter.
+ *   - mode === "positive" → keep patterns whose direction-adjusted ratio is
+ *                           greater than `minMfeMaeRatio`.
+ *   - mode === "auto"     → grid-search the threshold and pick the best.
+ *   - mode undefined      → legacy: mfeMaeRatioEnabled true ⇒ "positive",
+ *                                          false ⇒ "off".
+ */
+function resolveMfeMaeMode(
+  config: DiscoveryConfig,
+): "off" | "positive" | "auto" {
+  if (config.mfeMaeRatioMode) return config.mfeMaeRatioMode;
+  return config.mfeMaeRatioEnabled ? "positive" : "off";
+}
+
+/**
+ * Decide whether a pattern passes the MFE/MAE ratio filter for a given
+ * threshold. Infinity (zero MAE) passes any finite threshold; only a finite
+ * ratio at or below the threshold fails. A threshold of 0 (or negative) lets
+ * every pattern through — used by "off" mode and the bottom of the auto grid.
+ */
+function passesRatioFilter(ratio: number, threshold: number): boolean {
+  if (threshold <= 0) return true;
+  if (!Number.isFinite(ratio)) return true; // zero MAE ⇒ maximally favorable
+  return ratio > threshold;
+}
+
+/**
+ * Quality score for a set of surviving patterns, used to compare grid-search
+ * settings. Mirrors the Max Data probe's "pick the best" approach: we want
+ * the setting that yields the strongest, most reliable pattern set, not just
+ * the most patterns. The score rewards a high average win rate with enough
+ * samples, and penalizes empty result sets so the grid never picks a
+ * threshold that filters everything out.
+ */
+function scorePatternSet(patterns: Pattern[], minSampleSize: number): number {
+  if (patterns.length === 0) return -1;
+  let weightedWinRate = 0;
+  let totalSamples = 0;
+  for (const p of patterns) {
+    if (p.sampleSize >= minSampleSize) {
+      weightedWinRate += p.winRate * p.sampleSize;
+      totalSamples += p.sampleSize;
+    }
+  }
+  if (totalSamples === 0) return 0;
+  const avgWinRate = weightedWinRate / totalSamples;
+  // Reward edge (winRate above 50) weighted by sample volume, with a small
+  // bonus for pattern count so a richer viable set is preferred at equal edge.
+  const edge = Math.max(0, avgWinRate - 50);
+  return edge * Math.log10(Math.max(10, totalSamples)) + patterns.length * 0.01;
+}
+
+/**
+ * Run pattern discovery. Generates combinations of 2-maxDepth conditions
+ * across enabled features, evaluates each, and returns ranked patterns.
+ *
+ * The function is async and yields to the main thread between chunks via
+ * real `await new Promise(r => setTimeout(r, 0))` calls (every YIELD_EVERY
+ * combinations or ~50ms), so the browser stays responsive on large datasets.
+ * Combination generation is lazy and capped per depth so millions of arrays
+ * are never materialized.
+ *
+ * Calls onProgress periodically and checks shouldCancel between batches.
+ * Caps total combinations at config.maxCombinations.
+ *
+ * Filtering: patterns must satisfy minSampleSize, minWinRate, and a 5pp
+ * margin. MFE/MAE ratio filtering is controlled by `config.mfeMaeRatioMode`
+ * (with backward-compat fallback to the legacy `mfeMaeRatioEnabled` flag):
+ *   - "off"      → no ratio filter.
+ *   - "positive" → keep patterns whose direction-adjusted ratio exceeds
+ *                  `config.minMfeMaeRatio`.
+ *   - "auto"     → grid-search the ratio threshold and apply the winner.
+ * When `config.holdWindowAutoFind` is true, the hold-window (outcome
+ * horizon) is grid-searched and the winning value is used to measure
+ * outcomes; otherwise the manual `config.horizon` is used.
+ *
+ * `featureOverrides` (optional) is plumbed to `generateCandidates` so manual
+ * per-feature threshold/range overrides complement the auto-quartile
+ * bucketing. Features without an override keep the auto-quartile default.
+ */
+export async function runDiscovery(
+  bars: OHLCVBar[],
+  features: Feature[],
+  matrix: FeatureMatrix,
+  config: DiscoveryConfig,
+  onProgress: (p: DiscoveryProgress) => void,
+  shouldCancel: () => boolean,
+  featureOverrides: FeatureOverrides = {},
+): Promise<Pattern[]> {
+  const enabledFeatures = features.filter(
+    (f) =>
+      f.enabled &&
+      config.enabledCategories.includes(f.category) &&
+      matrix[f.id] != null,
+  );
+
+  const lookups = new Map<string, FeatureLookup>();
+  for (const f of enabledFeatures) {
+    lookups.set(f.id, { feature: f, values: matrix[f.id] });
+  }
+
+  const candidates = generateCandidates(
+    enabledFeatures,
+    matrix,
+    bars,
+    featureOverrides,
+  );
+  if (candidates.length === 0) {
+    onProgress({
+      total: 0,
+      tested: 0,
+      current: "No candidate conditions available.",
+      isRunning: false,
+      estimatedRemainingMs: 0,
+    });
+    return [];
+  }
+
+  // Build combination list across depths 2..maxDepth.
+  const depths: number[] = [];
+  for (let d = 2; d <= config.maxDepth; d++) depths.push(d);
+
+  let totalCombos = 0;
+  const perDepth: number[] = [];
+  for (const d of depths) {
+    // nCk can be huge; cap each depth's contribution.
+    const nCk = binomial(candidates.length, d);
+    perDepth.push(nCk);
+    totalCombos += nCk;
+  }
+
+  // Cap total combinations.
+  const cap = Math.min(config.maxCombinations, totalCombos);
+  // Distribute the cap across depths proportionally.
+  const depthCaps = perDepth.map((n) =>
+    totalCombos > 0 ? Math.max(1, Math.round((n / totalCombos) * cap)) : 0,
+  );
+
+  const startTime = Date.now();
+
+  onProgress({
+    total: cap,
+    tested: 0,
+    current: "Generating candidate combinations…",
+    isRunning: true,
+    estimatedRemainingMs: 0,
+  });
+
+  // ---- Hold-window auto-find (grid-search the outcome horizon) ----
+  // When enabled, mirror the Max Data probe: iterate candidate hold-window
+  // lengths, run the full evaluation pipeline for each, score the surviving
+  // pattern set, and pick the value that yields the best quality. The
+  // winning horizon is then used as the effective horizon for the final run.
+  const HOLD_WINDOW_GRID = [1, 2, 3, 5, 8, 12, 13, 21];
+  let effectiveHorizon = config.horizon;
+  if (config.holdWindowAutoFind) {
+    onProgress({
+      total: HOLD_WINDOW_GRID.length,
+      tested: 0,
+      current: "Auto-finding hold window…",
+      isRunning: true,
+      estimatedRemainingMs: 0,
+    });
+    let bestHoldScore = Number.NEGATIVE_INFINITY;
+    let bestHold = config.horizon;
+    for (let hi = 0; hi < HOLD_WINDOW_GRID.length; hi++) {
+      if (shouldCancel()) {
+        onProgress({
+          total: cap,
+          tested: 0,
+          current: "Cancelled.",
+          isRunning: false,
+          estimatedRemainingMs: 0,
+        });
+        return [];
+      }
+      const hw = HOLD_WINDOW_GRID[hi];
+      const probePatterns = await evaluateAllPatterns(
+        bars,
+        candidates,
+        lookups,
+        features,
+        config,
+        depthCaps,
+        depths,
+        hw,
+        config.mfeMaeWindow,
+        "off", // skip ratio filter during hold-window probe to isolate the
+        // effect of the hold window itself
+        0,
+        onProgress,
+        shouldCancel,
+        startTime,
+        /* quiet */ true,
+      );
+      const score = scorePatternSet(probePatterns, config.minSampleSize);
+      if (score > bestHoldScore) {
+        bestHoldScore = score;
+        bestHold = hw;
+      }
+      onProgress({
+        total: HOLD_WINDOW_GRID.length,
+        tested: hi + 1,
+        current: `Auto-finding hold window (${hi + 1}/${HOLD_WINDOW_GRID.length})`,
+        isRunning: true,
+        estimatedRemainingMs: 0,
+      });
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+    effectiveHorizon = bestHold;
+  }
+
+  // ---- MFE/MAE ratio mode resolution ----
+  const ratioMode = resolveMfeMaeMode(config);
+
+  // ---- MFE/MAE ratio auto-find (grid-search the threshold) ----
+  // When mode === "auto", iterate candidate thresholds, evaluate the full
+  // pattern set for each, score the survivors, and pick the threshold that
+  // yields the best quality. The winning threshold is then applied as the
+  // final filter. Mirrors the Max Data probe grid-search.
+  let effectiveRatioThreshold = config.minMfeMaeRatio;
+  if (ratioMode === "auto") {
+    const RATIO_GRID = [0, 0.5, 1, 1.25, 1.5, 2, 2.5, 3, 4, 5];
+    onProgress({
+      total: RATIO_GRID.length,
+      tested: 0,
+      current: "Auto-finding MFE/MAE ratio threshold…",
+      isRunning: true,
+      estimatedRemainingMs: 0,
+    });
+    let bestRatioScore = Number.NEGATIVE_INFINITY;
+    let bestThreshold = 0;
+    for (let ri = 0; ri < RATIO_GRID.length; ri++) {
+      if (shouldCancel()) {
+        onProgress({
+          total: cap,
+          tested: 0,
+          current: "Cancelled.",
+          isRunning: false,
+          estimatedRemainingMs: 0,
+        });
+        return [];
+      }
+      const threshold = RATIO_GRID[ri];
+      const probePatterns = await evaluateAllPatterns(
+        bars,
+        candidates,
+        lookups,
+        features,
+        config,
+        depthCaps,
+        depths,
+        effectiveHorizon,
+        config.mfeMaeWindow,
+        "positive",
+        threshold,
+        onProgress,
+        shouldCancel,
+        startTime,
+        /* quiet */ true,
+      );
+      const score = scorePatternSet(probePatterns, config.minSampleSize);
+      if (score > bestRatioScore) {
+        bestRatioScore = score;
+        bestThreshold = threshold;
+      }
+      onProgress({
+        total: RATIO_GRID.length,
+        tested: ri + 1,
+        current: `Auto-finding MFE/MAE ratio (${ri + 1}/${RATIO_GRID.length})`,
+        isRunning: true,
+        estimatedRemainingMs: 0,
+      });
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+    effectiveRatioThreshold = bestThreshold;
+  }
+
+  // ---- Final evaluation pass with the resolved settings ----
+  const patterns = await evaluateAllPatterns(
+    bars,
+    candidates,
+    lookups,
+    features,
+    config,
+    depthCaps,
+    depths,
+    effectiveHorizon,
+    config.mfeMaeWindow,
+    ratioMode === "off" ? "off" : "positive",
+    effectiveRatioThreshold,
+    onProgress,
+    shouldCancel,
+    startTime,
+    /* quiet */ false,
+  );
+
+  // Rank by score desc, then sample size desc.
+  patterns.sort((a, b) => b.score - a.score || b.sampleSize - a.sampleSize);
+
+  onProgress({
+    total: cap,
+    tested: cap,
+    current: "Done.",
+    isRunning: false,
+    estimatedRemainingMs: 0,
+  });
+
+  return patterns;
+}
+
+/**
+ * Core evaluation loop, factored out so the auto-find grid-searches can
+ * reuse it. Generates combinations across the configured depths, evaluates
+ * each, applies the win-rate / sample-size / margin filters, and applies the
+ * MFE/MAE ratio filter according to `ratioMode` + `ratioThreshold`.
+ *
+ * `horizon` is the effective outcome horizon (manual or auto-found hold
+ * window). `mfeMaeWindow` is the separate MFE/MAE excursion window.
+ *
+ * When `quiet` is true, progress callbacks are suppressed (used during
+ * grid-search probes so the UI doesn't flicker per-probe); the caller drives
+ * its own progress reporting around the grid.
+ */
+async function evaluateAllPatterns(
+  bars: OHLCVBar[],
+  candidates: Condition[],
+  lookups: Map<string, FeatureLookup>,
+  features: Feature[],
+  config: DiscoveryConfig,
+  depthCaps: number[],
+  depths: number[],
+  horizon: number,
+  mfeMaeWindow: number,
+  ratioMode: "off" | "positive",
+  ratioThreshold: number,
+  onProgress: (p: DiscoveryProgress) => void,
+  shouldCancel: () => boolean,
+  startTime: number,
+  quiet: boolean,
+): Promise<Pattern[]> {
+  const patterns: Pattern[] = [];
+  let tested = 0;
+
+  // Yield to the main thread every YIELD_EVERY combinations or every
+  // YIELD_INTERVAL_MS, whichever comes first. This keeps the tab responsive
+  // on large datasets without flooding the event loop with setTimeout(0).
+  const YIELD_EVERY = 200;
+  const YIELD_INTERVAL_MS = 50;
+  let lastYieldTime = startTime;
+  let sinceLastYield = 0;
+
+  const totalCap = depthCaps.reduce((a, b) => a + b, 0);
+
+  for (let di = 0; di < depths.length; di++) {
+    const depth = depths[di];
+    const depthCap = depthCaps[di];
+    if (depthCap <= 0) continue;
+
+    // Lazy, capped combination stream — never materializes the full nCk.
+    const comboStream = iterateCombinations(candidates, depth, depthCap);
+    let ci = 0;
+    for (const conds of comboStream) {
+      if (shouldCancel()) {
+        if (!quiet) {
+          onProgress({
+            total: totalCap,
+            tested,
+            current: "Cancelled.",
+            isRunning: false,
+            estimatedRemainingMs: 0,
+          });
+        }
+        return patterns;
+      }
+
+      // Skip combinations that reuse the same feature twice.
+      const featIds = new Set(conds.map((c) => c.featureId));
+      if (featIds.size !== conds.length) {
+        tested++;
+        ci++;
+        continue;
+      }
+
+      const result = evaluatePattern(
+        bars,
+        conds,
+        lookups,
+        horizon,
+        mfeMaeWindow,
+      );
+      tested++;
+      ci++;
+
+      if (result && result.metrics.sampleSize >= config.minSampleSize) {
+        const margin = result.metrics.winRate - 50;
+        if (
+          result.metrics.winRate >= config.minWinRate &&
+          Math.abs(margin) >= 5
+        ) {
+          // MFE/MAE ratio filter. "off" skips entirely; "positive" applies
+          // the (possibly auto-found) threshold to the direction-adjusted
+          // ratio. Infinity (zero MAE) passes any finite threshold; only a
+          // finite ratio at or below the threshold fails.
+          const ratioOk =
+            ratioMode === "off" ||
+            passesRatioFilter(result.mfeMaeRatio, ratioThreshold);
+          if (ratioOk) {
+            const score = scorePattern(
+              result.metrics.winRate,
+              result.metrics.sampleSize,
+              Math.abs(margin),
+            );
+            const sentence = buildPlainEnglishSentence(
+              conds,
+              features,
+              result.metrics.direction,
+              horizon,
+            );
+            const coverage = computePatternCoverage(
+              bars,
+              result.matches,
+              result.metrics,
+              /* datasetName */ "",
+              /* timeframe */ "unknown",
+            );
+            patterns.push({
+              id: `p_${patterns.length}`,
+              conditions: conds,
+              label: patternLabel(conds, features),
+              plainEnglishSentence: sentence,
+              coverage,
+              direction: result.metrics.direction,
+              winRate: result.metrics.winRate,
+              avgMove: result.metrics.avgMove,
+              avgMAE: result.metrics.avgMAE,
+              avgMFE: result.metrics.avgMFE,
+              // Carry the direction-adjusted ratio through to the pattern.
+              // Infinity (zero MAE) is stored as undefined so the field stays
+              // a finite, serializable number for persistence + UI.
+              mfeMaeRatio: Number.isFinite(result.mfeMaeRatio)
+                ? result.mfeMaeRatio
+                : undefined,
+              sampleSize: result.metrics.sampleSize,
+              confidence: confidenceRating(
+                result.metrics.winRate,
+                result.metrics.sampleSize,
+              ),
+              score,
+              horizon,
+            });
+          }
+        }
+      }
+
+      // Yield to the event loop + report progress every YIELD_EVERY combos
+      // or every YIELD_INTERVAL_MS, whichever comes first. The await on a
+      // real setTimeout(0) lets the browser paint and handle input.
+      sinceLastYield++;
+      const now = Date.now();
+      if (
+        sinceLastYield >= YIELD_EVERY ||
+        now - lastYieldTime >= YIELD_INTERVAL_MS
+      ) {
+        if (!quiet) {
+          const elapsed = now - startTime;
+          const perCombo = tested > 0 ? elapsed / tested : 0;
+          const remaining = Math.max(0, (totalCap - tested) * perCombo);
+          onProgress({
+            total: totalCap,
+            tested,
+            current: `Testing depth-${depth} combination ${ci}/${depthCap}`,
+            isRunning: true,
+            estimatedRemainingMs: remaining,
+          });
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        lastYieldTime = Date.now();
+        sinceLastYield = 0;
+      }
+    }
+  }
+
+  return patterns;
+}
+
+// ---------------------------------------------------------------------------
+// Pattern coverage.
+// Computes how broadly a pattern is validated across the examined history
+// and flags concentration risks (single symbol, single timeframe, short
+// window, few occurrences). For a single-dataset discovery run,
+// isBroadlyValidated is false — cross-symbol validation (see
+// computeCrossSymbolCoverage) is what flips it to true.
+// ---------------------------------------------------------------------------
+
+const FEW_OCCURRENCES_THRESHOLD = 30;
+const CONCENTRATED_SPAN_FRACTION = 0.25;
+const SPAN_CONSISTENCY_PP = 10;
+
+/**
+ * Compute coverage for a pattern given its matched bar indices within a
+ * single dataset. `metrics` is the pattern's own aggregated metrics, used to
+ * populate pooledResult/equalSymbolResult (which are identical for a single
+ * dataset).
+ */
+export function computePatternCoverage(
+  bars: OHLCVBar[],
+  matches: number[],
+  metrics: PatternMetrics,
+  datasetName: string,
+  timeframe: string,
+): PatternCoverage {
+  const totalBarsExamined = bars.length;
+  const totalOccurrences = matches.length;
+
+  let earliestTimestamp = 0;
+  let latestTimestamp = 0;
+  let firstOccurrence = 0;
+  let mostRecentOccurrence = 0;
+  if (matches.length > 0) {
+    earliestTimestamp = bars[matches[0]].timestamp;
+    latestTimestamp = bars[matches[matches.length - 1]].timestamp;
+    firstOccurrence = earliestTimestamp;
+    mostRecentOccurrence = latestTimestamp;
+  }
+
+  // Occurrences per symbol / timeframe. Discovery runs per-dataset, so each
+  // has a single entry, but the structure supports multi-symbol.
+  const symbolKey = datasetName || "dataset";
+  const occurrencesPerSymbol: Record<string, number> = {
+    [symbolKey]: totalOccurrences,
+  };
+  const occurrencesPerTimeframe: Record<string, number> = {
+    [timeframe || "unknown"]: totalOccurrences,
+  };
+
+  // Occurrences by period (year). Group matches by the bar's UTC year.
+  const byYearMap = new Map<number, number>();
+  for (const idx of matches) {
+    const year = new Date(bars[idx].timestamp).getUTCFullYear();
+    byYearMap.set(year, (byYearMap.get(year) ?? 0) + 1);
+  }
+  const occurrencesByPeriod = Array.from(byYearMap.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([year, count]) => ({ period: String(year), count }));
+
+  // Percent of history containing occurrences: occurrences / total bars * 100.
+  const percentOfHistoryContainingOccurrences =
+    totalBarsExamined > 0 ? (totalOccurrences / totalBarsExamined) * 100 : 0;
+
+  // Performance consistency across the span: compare first-half vs second-half
+  // win rates (within SPAN_CONSISTENCY_PP). We re-derive per-half win rates
+  // from the matched bars using the pattern's direction.
+  const performanceConsistentAcrossSpan = computeSpanConsistency(
+    bars,
+    matches,
+    metrics.direction,
+  );
+
+  // Concentration flags.
+  const concentrationFlags: string[] = [];
+  const symbolCount = Object.keys(occurrencesPerSymbol).length;
+  const timeframeCount = Object.keys(occurrencesPerTimeframe).length;
+  if (symbolCount <= 1) concentrationFlags.push("symbol-specific");
+  if (timeframeCount <= 1) concentrationFlags.push("timeframe-specific");
+  if (totalOccurrences < FEW_OCCURRENCES_THRESHOLD)
+    concentrationFlags.push("few-occurrences");
+  // Concentrated in a short period: the span from first to last occurrence
+  // covers less than CONCENTRATED_SPAN_FRACTION of the full data range.
+  if (totalBarsExamined > 0 && matches.length > 0) {
+    const dataStart = bars[0].timestamp;
+    const dataEnd = bars[totalBarsExamined - 1].timestamp;
+    const dataSpan = dataEnd - dataStart;
+    const occSpan = latestTimestamp - earliestTimestamp;
+    if (dataSpan > 0 && occSpan / dataSpan < CONCENTRATED_SPAN_FRACTION) {
+      concentrationFlags.push("concentrated-in-short-period");
+    }
+  }
+
+  // For a single dataset, pooled and equal-symbol results both equal the
+  // pattern's own stats. isBroadlyValidated is false until cross-symbol
+  // validation passes.
+  const pooledResult = {
+    winRate: metrics.winRate,
+    avgMove: metrics.avgMove,
+    sampleSize: metrics.sampleSize,
+  };
+  const equalSymbolResult = {
+    winRate: metrics.winRate,
+    avgMove: metrics.avgMove,
+    sampleSize: metrics.sampleSize,
+  };
+
+  return {
+    earliestTimestamp,
+    latestTimestamp,
+    totalBarsExamined,
+    totalOccurrences,
+    occurrencesPerSymbol,
+    occurrencesPerTimeframe,
+    occurrencesByPeriod,
+    firstOccurrence,
+    mostRecentOccurrence,
+    percentOfHistoryContainingOccurrences,
+    performanceConsistentAcrossSpan,
+    concentrationFlags,
+    isBroadlyValidated: false,
+    pooledResult,
+    equalSymbolResult,
+  };
+}
+
+/**
+ * Compare first-half vs second-half win rates of the matched bars. Returns
+ * true when the two halves are within SPAN_CONSISTENCY_PP of each other,
+ * indicating no obvious regime drift across the examined span.
+ */
+function computeSpanConsistency(
+  bars: OHLCVBar[],
+  matches: number[],
+  direction: Direction,
+): boolean {
+  if (matches.length < 2) return matches.length > 0;
+  const mid = Math.floor(matches.length / 2);
+  const firstHalf = matches.slice(0, mid);
+  const secondHalf = matches.slice(mid);
+  const wr1 = halfWinRate(bars, firstHalf, direction);
+  const wr2 = halfWinRate(bars, secondHalf, direction);
+  return Math.abs(wr1 - wr2) <= SPAN_CONSISTENCY_PP;
+}
+
+function halfWinRate(
+  bars: OHLCVBar[],
+  matches: number[],
+  direction: Direction,
+): number {
+  if (matches.length === 0) return 0;
+  let wins = 0;
+  for (const idx of matches) {
+    // We don't have the horizon here; use a sign-only proxy on the next bar's
+    // close vs entry close. This is a coarse consistency check, not the
+    // authoritative win rate (which is computed in evaluatePattern).
+    if (idx + 1 >= bars.length) continue;
+    const ret = bars[idx + 1].close - bars[idx].close;
+    if (direction === "bullish" && ret > 0) wins++;
+    else if (direction === "bearish" && ret < 0) wins++;
+  }
+  return (wins / matches.length) * 100;
+}
+
+// ---------------------------------------------------------------------------
+// Cross-symbol validation.
+// Re-evaluates a pattern's conditions on each of several datasets, collects
+// per-symbol occurrences and win rates, and computes pooled (sum all) and
+// equal-symbol (average each symbol's win rate equally) results. The pattern
+// is broadly validated only when >= 2 symbols each have >= minSampleSize
+// occurrences and win rates within 10pp of each other.
+// ---------------------------------------------------------------------------
+
+const CROSS_SYMBOL_MIN_SYMBOLS = 2;
+const CROSS_SYMBOL_WINRATE_PP = 10;
+
+/**
+ * Re-evaluate a pattern across multiple datasets and return an updated
+ * coverage object whose pooled/equal-symbol results and isBroadlyValidated
+ * flag reflect cross-symbol performance. The returned coverage merges the
+ * per-dataset occurrence counts into occurrencesPerSymbol /
+ * occurrencesPerTimeframe / occurrencesByPeriod.
+ */
+export function computeCrossSymbolCoverage(
+  pattern: Pattern,
+  datasets: Dataset[],
+  featuresPerDataset: Map<string, Feature[]> = new Map(),
+  matrixPerDataset: Map<string, FeatureMatrix> = new Map(),
+  minSampleSize = 30,
+): PatternCoverage | null {
+  if (datasets.length === 0) return null;
+
+  const perSymbol: {
+    symbol: string;
+    timeframe: string;
+    occurrences: number;
+    winRate: number;
+    avgMove: number;
+    bars: OHLCVBar[];
+    matches: number[];
+    metrics: PatternMetrics | null;
+  }[] = [];
+
+  const occurrencesPerSymbol: Record<string, number> = {};
+  const occurrencesPerTimeframe: Record<string, number> = {};
+  const byPeriodMap = new Map<string, number>();
+  let earliest = Number.POSITIVE_INFINITY;
+  let latest = Number.NEGATIVE_INFINITY;
+  let totalOccurrences = 0;
+  let totalBarsExamined = 0;
+
+  for (const ds of datasets) {
+    totalBarsExamined += ds.bars.length;
+    const feats = featuresPerDataset.get(ds.id);
+    const mat = matrixPerDataset.get(ds.id);
+    if (!feats || !mat) {
+      // No feature matrix for this dataset — it contributes zero occurrences.
+      perSymbol.push({
+        symbol: ds.label ?? ds.name,
+        timeframe: ds.timeframe,
+        occurrences: 0,
+        winRate: 0,
+        avgMove: 0,
+        bars: ds.bars,
+        matches: [],
+        metrics: null,
+      });
+      continue;
+    }
+
+    const lookups = new Map<string, FeatureLookup>();
+    for (const f of feats) {
+      if (mat[f.id]) lookups.set(f.id, { feature: f, values: mat[f.id] });
+    }
+    const result = evaluatePattern(
+      ds.bars,
+      pattern.conditions,
+      lookups,
+      pattern.horizon,
+      pattern.horizon,
+    );
+    const symbol = ds.label ?? ds.name;
+    const occ = result ? result.metrics.sampleSize : 0;
+    const wr = result ? result.metrics.winRate : 0;
+    const am = result ? result.metrics.avgMove : 0;
+    perSymbol.push({
+      symbol,
+      timeframe: ds.timeframe,
+      occurrences: occ,
+      winRate: wr,
+      avgMove: am,
+      bars: ds.bars,
+      matches: result ? result.matches : [],
+      metrics: result ? result.metrics : null,
+    });
+    occurrencesPerSymbol[symbol] = occ;
+    occurrencesPerTimeframe[ds.timeframe] =
+      (occurrencesPerTimeframe[ds.timeframe] ?? 0) + occ;
+    totalOccurrences += occ;
+    if (result && result.matches.length > 0) {
+      const first = ds.bars[result.matches[0]].timestamp;
+      const last = ds.bars[result.matches[result.matches.length - 1]].timestamp;
+      if (first < earliest) earliest = first;
+      if (last > latest) latest = last;
+      for (const idx of result.matches) {
+        const year = String(new Date(ds.bars[idx].timestamp).getUTCFullYear());
+        byPeriodMap.set(year, (byPeriodMap.get(year) ?? 0) + 1);
+      }
+    }
+  }
+
+  // Pooled result: sum all occurrences across symbols, recompute win rate as
+  // the occurrence-weighted average.
+  let pooledWins = 0;
+  let pooledSumMove = 0;
+  for (const s of perSymbol) {
+    pooledWins += (s.winRate / 100) * s.occurrences;
+    pooledSumMove += s.avgMove * s.occurrences;
+  }
+  const pooledWinRate =
+    totalOccurrences > 0 ? (pooledWins / totalOccurrences) * 100 : 0;
+  const pooledAvgMove =
+    totalOccurrences > 0 ? pooledSumMove / totalOccurrences : 0;
+
+  // Equal-symbol result: average each symbol's win rate equally regardless
+  // of occurrence count.
+  const symbolsWithOccurrences = perSymbol.filter((s) => s.occurrences > 0);
+  const equalWinRate =
+    symbolsWithOccurrences.length > 0
+      ? symbolsWithOccurrences.reduce((acc, s) => acc + s.winRate, 0) /
+        symbolsWithOccurrences.length
+      : 0;
+  const equalAvgMove =
+    symbolsWithOccurrences.length > 0
+      ? symbolsWithOccurrences.reduce((acc, s) => acc + s.avgMove, 0) /
+        symbolsWithOccurrences.length
+      : 0;
+  const equalSampleSize = symbolsWithOccurrences.reduce(
+    (acc, s) => acc + s.occurrences,
+    0,
+  );
+
+  // Broadly validated: >= 2 symbols each with >= minSampleSize occurrences
+  // and win rates within 10pp of each other.
+  const qualifying = perSymbol.filter((s) => s.occurrences >= minSampleSize);
+  let isBroadlyValidated = false;
+  if (qualifying.length >= CROSS_SYMBOL_MIN_SYMBOLS) {
+    const wrs = qualifying.map((s) => s.winRate);
+    const minWr = Math.min(...wrs);
+    const maxWr = Math.max(...wrs);
+    isBroadlyValidated = maxWr - minWr <= CROSS_SYMBOL_WINRATE_PP;
+  }
+
+  // Concentration flags (recomputed across the pooled symbol set).
+  const concentrationFlags: string[] = [];
+  const symbolCount = Object.keys(occurrencesPerSymbol).filter(
+    (k) => occurrencesPerSymbol[k] > 0,
+  ).length;
+  const timeframeCount = Object.keys(occurrencesPerTimeframe).filter(
+    (k) => occurrencesPerTimeframe[k] > 0,
+  ).length;
+  if (symbolCount <= 1) concentrationFlags.push("symbol-specific");
+  if (timeframeCount <= 1) concentrationFlags.push("timeframe-specific");
+  if (totalOccurrences < FEW_OCCURRENCES_THRESHOLD)
+    concentrationFlags.push("few-occurrences");
+
+  const occurrencesByPeriod = Array.from(byPeriodMap.entries())
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([period, count]) => ({ period, count }));
+
+  // Percent of history containing occurrences across all datasets.
+  const percentOfHistoryContainingOccurrences =
+    totalBarsExamined > 0 ? (totalOccurrences / totalBarsExamined) * 100 : 0;
+
+  // Span consistency across the pooled matches: use the first dataset's
+  // pattern direction as the reference direction.
+  const allMatches: { bars: OHLCVBar[]; idx: number }[] = [];
+  for (const s of perSymbol) {
+    for (const idx of s.matches) allMatches.push({ bars: s.bars, idx });
+  }
+  const performanceConsistentAcrossSpan =
+    allMatches.length >= 2
+      ? computeSpanConsistencyPooled(allMatches, pattern.direction)
+      : allMatches.length > 0;
+
+  return {
+    earliestTimestamp: Number.isFinite(earliest) ? earliest : 0,
+    latestTimestamp: Number.isFinite(latest) ? latest : 0,
+    totalBarsExamined,
+    totalOccurrences,
+    occurrencesPerSymbol,
+    occurrencesPerTimeframe,
+    occurrencesByPeriod,
+    firstOccurrence: Number.isFinite(earliest) ? earliest : 0,
+    mostRecentOccurrence: Number.isFinite(latest) ? latest : 0,
+    percentOfHistoryContainingOccurrences,
+    performanceConsistentAcrossSpan,
+    concentrationFlags,
+    isBroadlyValidated,
+    pooledResult: {
+      winRate: pooledWinRate,
+      avgMove: pooledAvgMove,
+      sampleSize: totalOccurrences,
+    },
+    equalSymbolResult: {
+      winRate: equalWinRate,
+      avgMove: equalAvgMove,
+      sampleSize: equalSampleSize,
+    },
+  };
+}
+
+/** Span consistency across pooled matches from multiple datasets. */
+function computeSpanConsistencyPooled(
+  allMatches: { bars: OHLCVBar[]; idx: number }[],
+  direction: Direction,
+): boolean {
+  if (allMatches.length < 2) return allMatches.length > 0;
+  // Order by timestamp, then split into halves.
+  const sorted = [...allMatches].sort(
+    (a, b) => a.bars[a.idx].timestamp - b.bars[b.idx].timestamp,
+  );
+  const mid = Math.floor(sorted.length / 2);
+  const wr = (slice: typeof sorted) => {
+    if (slice.length === 0) return 0;
+    let wins = 0;
+    for (const m of slice) {
+      if (m.idx + 1 >= m.bars.length) continue;
+      const ret = m.bars[m.idx + 1].close - m.bars[m.idx].close;
+      if (direction === "bullish" && ret > 0) wins++;
+      else if (direction === "bearish" && ret < 0) wins++;
+    }
+    return (wins / slice.length) * 100;
+  };
+  return (
+    Math.abs(wr(sorted.slice(0, mid)) - wr(sorted.slice(mid))) <=
+    SPAN_CONSISTENCY_PP
+  );
+}
+
+function binomial(n: number, k: number): number {
+  if (k < 0 || k > n) return 0;
+  if (k === 0 || k === n) return 1;
+  let result = 1;
+  for (let i = 0; i < k; i++) {
+    result = (result * (n - i)) / (i + 1);
+  }
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.round(result));
+}

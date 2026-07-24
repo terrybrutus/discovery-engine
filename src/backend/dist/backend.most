@@ -1,0 +1,134 @@
+// Version: 4.0.0
+type AccessControlState__147560986 =
+  {
+    var adminAssigned : Bool;
+    userRoles : Map__246123559<Principal, UserRole__811971078>
+  };
+type AccessControlState__422885857 =
+  {
+    var adminAssigned : Bool;
+    userRoles : Map__246123559<Principal, UserRole__598945205>
+  };
+type Data__552063367<K, V> = {var count : Nat__93962160; kvs : [var ?(K, V)]};
+type DatasetRef__342656741 = {id : Text; name : Text};
+type DatasetRef__494139744 = {id : Text; name : Text};
+type DiscoveryConfig__431068165 =
+  {
+    horizon : Nat;
+    maxDepth : Nat;
+    mfeMaeRatioEnabled : Bool;
+    mfeMaeWindow : Nat;
+    minMfeMaeRatio : Float;
+    minSampleSize : Nat;
+    minWinRate : Float
+  };
+type DiscoveryConfig__910470412 =
+  {
+    horizon : Nat;
+    maxDepth : Nat;
+    mfeMaeRatioEnabled : Bool;
+    mfeMaeWindow : Nat;
+    minMfeMaeRatio : Float;
+    minSampleSize : Nat;
+    minWinRate : Float
+  };
+type Internal__455405067<K, V> =
+  {children : [var ?Node__279997185<K, V>]; data : Data__552063367<K, V>};
+type Leaf__114713147<K, V> = {data : Data__552063367<K, V>};
+type Map__190625089<K, V> = Map__719753394<K, V>;
+type Map__246123559<K, V> = Map__190625089<K, V>;
+type Map__719753394<K, V> =
+  {var root : Node__279997185<K, V>; var size : Nat__93962160};
+type Nat__920180692 = Nat;
+type Nat__93962160 = Nat__920180692;
+type NewActor__197434775 =
+  {var accessControlState : AccessControlState__422885857};
+type NewActor__745082389 =
+  {
+    accessControlState : AccessControlState__147560986;
+    nextRunId : {var value : Nat};
+    runs :
+      Map__246123559<Principal, Map__246123559<Nat, SavedRun__380320321>>
+  };
+type Node__279997185<K, V> =
+  {#internal : Internal__455405067<K, V>; #leaf : Leaf__114713147<K, V>};
+type OldActor__133392359 = {};
+type OldActor__330952908 =
+  {var accessControlState : AccessControlState__147560986};
+type Pattern__651065955 =
+  {
+    coverage : Float;
+    id : Text;
+    mfeMaeRatio : Float;
+    name : Text;
+    plainEnglishSentence : Text;
+    winRate : Float
+  };
+type Pattern__83137366 =
+  {
+    coverage : Float;
+    id : Text;
+    mfeMaeRatio : Float;
+    name : Text;
+    plainEnglishSentence : Text;
+    winRate : Float
+  };
+type Report__1035804803 = {generatedAtNs : Int; summary : Text};
+type Report__364718504 = {generatedAtNs : Int; summary : Text};
+type SavedRun__380320321 =
+  {
+    config : DiscoveryConfig__431068165;
+    datasets : [DatasetRef__494139744];
+    id : Nat;
+    name : Text;
+    owner : Principal;
+    patterns : [Pattern__651065955];
+    report : Report__364718504;
+    savedAtNs : Int;
+    validation : ValidationResult__638294592
+  };
+type SavedRun__644507744 =
+  {
+    config : DiscoveryConfig__910470412;
+    datasets : [DatasetRef__342656741];
+    id : Nat;
+    name : Text;
+    owner : Principal;
+    patterns : [Pattern__83137366];
+    report : Report__1035804803;
+    savedAtNs : Int;
+    validation : ValidationResult__286923104
+  };
+type UserRole__598945205 = {#admin; #guest; #user};
+type UserRole__686137147 = {#admin; #guest; #user};
+type UserRole__811971078 = {#admin; #guest; #user};
+type ValidationResult__286923104 =
+  {
+    byMarketCondition : [(Text, Float)];
+    inSampleWinRate : Float;
+    outOfSampleWinRate : Float
+  };
+type ValidationResult__638294592 =
+  {
+    byMarketCondition : [(Text, Float)];
+    inSampleWinRate : Float;
+    outOfSampleWinRate : Float
+  };
+{
+  "20260723_213116" : (_old : OldActor__133392359) -> NewActor__197434775;
+  "20260724_002515" : (old : OldActor__330952908) -> NewActor__745082389
+}
+actor  {
+  stable accessControlState :
+    {
+      var adminAssigned : Bool;
+      userRoles : Map__246123559<Principal, UserRole__686137147>
+    };
+  stable nextRunId : {var value : Nat};
+  stable runs :
+    {
+      var root :
+        Node__279997185<Principal, Map__246123559<Nat, SavedRun__644507744>>;
+      var size : Nat__93962160
+    }
+};

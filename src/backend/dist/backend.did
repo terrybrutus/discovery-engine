@@ -1,0 +1,127 @@
+type Value = 
+ variant {
+   "bool": bool;
+   float: float64;
+   "int": int;
+   "nat": nat;
+   "null";
+   "text": text;
+ };
+type ValidationResult = 
+ record {
+   byMarketCondition: vec record {
+                            text;
+                            float64;
+                          };
+   inSampleWinRate: float64;
+   outOfSampleWinRate: float64;
+ };
+type UserRole = 
+ variant {
+   admin;
+   guest;
+   user;
+ };
+type SavedRunSummary = 
+ record {
+   configSummary: text;
+   datasetName: text;
+   id: nat;
+   name: text;
+   patternCount: nat;
+   savedAtNs: int;
+ };
+type SavedRun = 
+ record {
+   config: DiscoveryConfig;
+   datasets: vec DatasetRef;
+   id: nat;
+   name: text;
+   owner: principal;
+   patterns: vec Pattern;
+   report: Report;
+   savedAtNs: int;
+   validation: ValidationResult;
+ };
+type Result__1 = 
+ variant {
+   err: Error;
+   ok;
+ };
+type Result = 
+ record {
+   hasMore: bool;
+   rows: vec vec Cell;
+ };
+type Report = 
+ record {
+   generatedAtNs: int;
+   summary: text;
+ };
+type Pattern = 
+ record {
+   coverage: float64;
+   id: text;
+   mfeMaeRatio: float64;
+   name: text;
+   plainEnglishSentence: text;
+   winRate: float64;
+ };
+type Error = 
+ variant {
+   AmbiguousAttribute: record {
+                         field: text;
+                         sources: vec text;
+                       };
+   FrontendOriginMismatch: record {
+                             expected: vec text;
+                             got: text;
+                           };
+   FrontendOriginsNotConfigured;
+   MalformedCandid;
+   MissingField: text;
+   MixedSsoSources: record {
+                      otherKeys: vec text;
+                      ssoKeys: vec text;
+                    };
+   NoAttributes;
+   Stale: record {ageNs: nat;};
+   UnknownNonce;
+   UntrustedSsoSource: record {domain: text;};
+ };
+type DiscoveryConfig = 
+ record {
+   horizon: nat;
+   maxDepth: nat;
+   mfeMaeRatioEnabled: bool;
+   mfeMaeWindow: nat;
+   minMfeMaeRatio: float64;
+   minSampleSize: nat;
+   minWinRate: float64;
+ };
+type DatasetRef = 
+ record {
+   id: text;
+   name: text;
+ };
+type Cell = 
+ record {
+   name: text;
+   value: Value;
+ };
+service : {
+  _initialize_access_control: () -> ();
+  _internet_identity_sign_in_finish: () -> (Result__1);
+  _internet_identity_sign_in_start: () -> (blob);
+  assignCallerUserRole: (user: principal, role: UserRole) -> ();
+  deleteMyRun: (runId: nat) -> (bool);
+  execute: (qJson: text) -> (Result) query;
+  getCallerUserRole: () -> (UserRole) query;
+  getMyRun: (runId: nat) -> (opt SavedRun);
+  getMyRuns: (runIds: vec nat) -> (vec SavedRun);
+  isCallerAdmin: () -> (bool) query;
+  listMyRunSummaries: () -> (vec SavedRunSummary);
+  listMyRuns: () -> (vec SavedRun);
+  saveRun: (run: SavedRun) -> (SavedRun);
+  schema: () -> (text) query;
+}

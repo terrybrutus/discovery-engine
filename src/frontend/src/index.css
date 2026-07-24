@@ -1,0 +1,384 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@font-face {
+  font-family: "Space Grotesk";
+  src: url("/assets/fonts/SpaceGrotesk.woff2") format("woff2");
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "DM Sans";
+  src: url("/assets/fonts/DMSans.woff2") format("woff2");
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/assets/fonts/JetBrainsMono.woff2") format("woff2");
+  font-display: swap;
+}
+
+@layer base {
+  :root {
+    --font-display: "Space Grotesk";
+    --font-body: "DM Sans";
+    --font-mono: "JetBrains Mono";
+    --radius: 0.25rem;
+
+    /* Light mode — instrument white (kept for parity, dark is primary) */
+    --background: 0.985 0.003 240;
+    --foreground: 0.16 0.012 240;
+    --card: 1.0 0 0;
+    --card-foreground: 0.16 0.012 240;
+    --popover: 1.0 0 0;
+    --popover-foreground: 0.16 0.012 240;
+
+    --primary: 0.72 0.19 145;
+    --primary-foreground: 0.13 0.02 145;
+
+    --secondary: 0.95 0.006 240;
+    --secondary-foreground: 0.24 0.012 240;
+    --muted: 0.95 0.006 240;
+    --muted-foreground: 0.5 0.012 240;
+
+    --accent: 0.72 0.19 145;
+    --accent-foreground: 0.13 0.02 145;
+
+    --success: 0.7 0.17 145;
+    --warning: 0.78 0.15 70;
+    --destructive: 0.6 0.22 25;
+    --destructive-foreground: 0.98 0.005 25;
+
+    --border: 0.9 0.006 240;
+    --input: 0.9 0.006 240;
+    --ring: 0.72 0.19 145;
+
+    --chart-1: 0.72 0.19 145;
+    --chart-2: 0.7 0.15 70;
+    --chart-3: 0.62 0.2 25;
+    --chart-4: 0.65 0.14 230;
+    --chart-5: 0.68 0.16 300;
+
+    /* Depth-range selector — light (2-4 conditions): calibrated-restrained amber */
+    --depth-light: 0.82 0.13 75;
+    --depth-light-foreground: 0.16 0.02 75;
+    /* Depth-range selector — deep (5-6 conditions): primary-active electric green */
+    --depth-deep: 0.82 0.2 145;
+    --depth-deep-foreground: 0.14 0.008 240;
+    /* Dataset list — alternating card stripe (hair above card) */
+    --dataset-stripe: 0.995 0.003 240;
+    /* Cross-reference table — shared-dataset row link tint */
+    --correlation-cell: 0.82 0.2 145;
+
+    /* Compare view — config diff highlights */
+    --diff-added: 0.72 0.17 145;
+    --diff-added-foreground: 0.14 0.008 240;
+    --diff-removed: 0.62 0.22 25;
+    --diff-removed-foreground: 0.98 0.005 25;
+    --diff-changed: 0.8 0.15 70;
+    --diff-changed-foreground: 0.16 0.02 70;
+    /* Validation — pattern survival status */
+    --surviving: 0.72 0.17 145;
+    --surviving-foreground: 0.14 0.008 240;
+    --degraded: 0.8 0.15 70;
+    --degraded-foreground: 0.16 0.02 70;
+    /* Auto-find probe — range bracket accent */
+    --probe-bracket: 0.82 0.2 145;
+    --probe-bracket-foreground: 0.14 0.008 240;
+
+    --sidebar: 0.97 0.004 240;
+    --sidebar-foreground: 0.16 0.012 240;
+    --sidebar-primary: 0.72 0.19 145;
+    --sidebar-primary-foreground: 0.13 0.02 145;
+    --sidebar-accent: 0.95 0.006 240;
+    --sidebar-accent-foreground: 0.24 0.012 240;
+    --sidebar-border: 0.9 0.006 240;
+    --sidebar-ring: 0.72 0.19 145;
+  }
+
+  .dark {
+    /* Primary mode — calibrated ink terminal */
+    --background: 0.14 0.008 240;
+    --foreground: 0.93 0.006 240;
+    --card: 0.175 0.01 240;
+    --card-foreground: 0.93 0.006 240;
+    --popover: 0.19 0.012 240;
+    --popover-foreground: 0.93 0.006 240;
+
+    --primary: 0.82 0.2 145;
+    --primary-foreground: 0.14 0.008 240;
+
+    --secondary: 0.22 0.012 240;
+    --secondary-foreground: 0.86 0.006 240;
+    --muted: 0.2 0.01 240;
+    --muted-foreground: 0.58 0.012 240;
+
+    --accent: 0.82 0.2 145;
+    --accent-foreground: 0.14 0.008 240;
+
+    --success: 0.72 0.17 145;
+    --warning: 0.8 0.15 70;
+    --destructive: 0.62 0.22 25;
+    --destructive-foreground: 0.95 0.006 25;
+
+    --border: 0.26 0.012 240;
+    --input: 0.26 0.012 240;
+    --ring: 0.82 0.2 145;
+
+    --chart-1: 0.82 0.2 145;
+    --chart-2: 0.78 0.15 70;
+    --chart-3: 0.65 0.22 25;
+    --chart-4: 0.68 0.14 230;
+    --chart-5: 0.7 0.16 300;
+
+    /* Depth-range selector — light (2-4 conditions): calibrated-restrained amber */
+    --depth-light: 0.8 0.12 75;
+    --depth-light-foreground: 0.16 0.008 240;
+    /* Depth-range selector — deep (5-6 conditions): primary-active electric green */
+    --depth-deep: 0.82 0.2 145;
+    --depth-deep-foreground: 0.14 0.008 240;
+    /* Dataset list — alternating card stripe (hair above card) */
+    --dataset-stripe: 0.2 0.012 240;
+    /* Cross-reference table — shared-dataset row link tint */
+    --correlation-cell: 0.82 0.2 145;
+
+    /* Compare view — config diff highlights */
+    --diff-added: 0.72 0.17 145;
+    --diff-added-foreground: 0.14 0.008 240;
+    --diff-removed: 0.62 0.22 25;
+    --diff-removed-foreground: 0.95 0.006 25;
+    --diff-changed: 0.8 0.15 70;
+    --diff-changed-foreground: 0.16 0.02 70;
+    /* Validation — pattern survival status */
+    --surviving: 0.72 0.17 145;
+    --surviving-foreground: 0.14 0.008 240;
+    --degraded: 0.8 0.15 70;
+    --degraded-foreground: 0.16 0.02 70;
+    /* Auto-find probe — range bracket accent */
+    --probe-bracket: 0.82 0.2 145;
+    --probe-bracket-foreground: 0.14 0.008 240;
+
+    --sidebar: 0.16 0.01 240;
+    --sidebar-foreground: 0.93 0.006 240;
+    --sidebar-primary: 0.82 0.2 145;
+    --sidebar-primary-foreground: 0.14 0.008 240;
+    --sidebar-accent: 0.22 0.012 240;
+    --sidebar-accent-foreground: 0.86 0.006 240;
+    --sidebar-border: 0.26 0.012 240;
+    --sidebar-ring: 0.82 0.2 145;
+  }
+
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground font-body antialiased;
+  }
+}
+
+@layer utilities {
+  .transition-smooth {
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+  }
+  .grid-canvas {
+    background-image: linear-gradient(
+        to right,
+        oklch(var(--border) / 0.4) 1px,
+        transparent 1px
+      ),
+      linear-gradient(
+        to bottom,
+        oklch(var(--border) / 0.4) 1px,
+        transparent 1px
+      );
+    background-size: 32px 32px;
+  }
+  /* Depth-range selector chips — light group (2-4 conditions) */
+  .depth-light-chip {
+    background-color: oklch(var(--depth-light) / 0.12);
+    color: oklch(var(--depth-light));
+    border: 1px solid oklch(var(--depth-light) / 0.3);
+  }
+  .depth-light-chip[data-active="true"] {
+    background-color: oklch(var(--depth-light));
+    color: oklch(var(--depth-light-foreground));
+    border-color: oklch(var(--depth-light));
+  }
+  /* Depth-range selector chips — deep group (5-6 conditions) */
+  .depth-deep-chip {
+    background-color: oklch(var(--depth-deep) / 0.12);
+    color: oklch(var(--depth-deep));
+    border: 1px solid oklch(var(--depth-deep) / 0.3);
+  }
+  .depth-deep-chip[data-active="true"] {
+    background-color: oklch(var(--depth-deep));
+    color: oklch(var(--depth-deep-foreground));
+    border-color: oklch(var(--depth-deep));
+  }
+  /* Dataset list card — flat instrument surface with hairline stripe variant */
+  .dataset-card {
+    background-color: oklch(var(--card));
+    border: 1px solid oklch(var(--border));
+    border-radius: var(--radius);
+  }
+  .dataset-card[data-stripe="true"] {
+    background-color: oklch(var(--dataset-stripe));
+  }
+  .dataset-card[data-active="true"] {
+    border-color: oklch(var(--primary));
+    box-shadow: inset 2px 0 0 0 oklch(var(--primary));
+  }
+  /* Cross-reference table — rows sharing a contributing dataset */
+  .correlation-row-linked {
+    box-shadow: inset 2px 0 0 0 oklch(var(--correlation-cell) / 0.55);
+  }
+  /* Column-preview chip for dataset list — preserves original column names */
+  .column-chip {
+    background-color: oklch(var(--muted));
+    color: oklch(var(--muted-foreground));
+    border: 1px solid oklch(var(--border));
+    border-radius: calc(var(--radius) - 2px);
+  }
+  /* MFE/MAE ratio filter — 3-position segment (Off / Positive / Auto-find) */
+  .mode-segment {
+    display: inline-flex;
+    background-color: oklch(var(--muted));
+    border: 1px solid oklch(var(--border));
+    border-radius: var(--radius);
+    padding: 2px;
+    gap: 2px;
+  }
+  .mode-segment > [data-segment] {
+    padding: 0.375rem 0.875rem;
+    font-family: var(--font-display);
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: oklch(var(--muted-foreground));
+    border-radius: calc(var(--radius) - 2px);
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    cursor: pointer;
+  }
+  .mode-segment > [data-segment][data-active="true"] {
+    background-color: oklch(var(--primary));
+    color: oklch(var(--primary-foreground));
+  }
+  /* Auto-find probe result card — loosest/strictest viable range display */
+  .probe-result {
+    background-color: oklch(var(--card));
+    border: 1px solid oklch(var(--border));
+    border-radius: var(--radius);
+    padding: 0.75rem 1rem;
+  }
+  .probe-bracket-bar {
+    position: relative;
+    height: 6px;
+    background-color: oklch(var(--muted));
+    border-radius: calc(var(--radius) - 2px);
+    overflow: hidden;
+  }
+  .probe-bracket-bar::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: var(--bracket-start, 0%);
+    right: var(--bracket-end, 0%);
+    background-color: oklch(var(--probe-bracket));
+    border-radius: calc(var(--radius) - 2px);
+    animation: bracket-expand 0.5s cubic-bezier(0.4, 0, 0.2, 1) both;
+  }
+  /* Per-feature range tuning — numeric override inputs */
+  .bucket-input {
+    background-color: oklch(var(--background));
+    border: 1px solid oklch(var(--border));
+    border-radius: calc(var(--radius) - 2px);
+    color: oklch(var(--foreground));
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 0.8125rem;
+    padding: 0.25rem 0.5rem;
+    width: 5.5rem;
+    transition: border-color 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .bucket-input:focus {
+    outline: none;
+    border-color: oklch(var(--primary));
+    box-shadow: 0 0 0 1px oklch(var(--primary) / 0.4);
+  }
+  .bucket-input[data-override="true"] {
+    border-color: oklch(var(--depth-light) / 0.6);
+    background-color: oklch(var(--depth-light) / 0.06);
+  }
+  /* Saved-runs list card — flat instrument surface */
+  .run-card {
+    background-color: oklch(var(--card));
+    border: 1px solid oklch(var(--border));
+    border-radius: var(--radius);
+    padding: 0.75rem 1rem;
+    transition: border-color 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .run-card[data-selected="true"] {
+    border-color: oklch(var(--primary));
+    box-shadow: inset 2px 0 0 0 oklch(var(--primary));
+  }
+  .run-card[data-selected="true"][data-compare="true"] {
+    box-shadow: inset 2px 0 0 0 oklch(var(--depth-light));
+    border-color: oklch(var(--depth-light));
+  }
+  /* Compare view — config diff cell tints */
+  .diff-added {
+    background-color: oklch(var(--diff-added) / 0.14);
+    color: oklch(var(--diff-added));
+  }
+  .diff-removed {
+    background-color: oklch(var(--diff-removed) / 0.14);
+    color: oklch(var(--diff-removed));
+  }
+  .diff-changed {
+    background-color: oklch(var(--diff-changed) / 0.14);
+    color: oklch(var(--diff-changed));
+  }
+  /* Consolidated report — coverage stat card */
+  .stat-card {
+    background-color: oklch(var(--card));
+    border: 1px solid oklch(var(--border));
+    border-radius: var(--radius);
+    padding: 0.875rem 1rem;
+  }
+  .stat-card[data-accent="true"] {
+    border-color: oklch(var(--primary) / 0.4);
+    box-shadow: inset 2px 0 0 0 oklch(var(--primary));
+  }
+  /* Validation status pills — surviving vs degraded patterns */
+  .surviving {
+    background-color: oklch(var(--surviving) / 0.16);
+    color: oklch(var(--surviving));
+    border: 1px solid oklch(var(--surviving) / 0.4);
+    border-radius: calc(var(--radius) - 2px);
+    padding: 0.125rem 0.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .degraded {
+    background-color: oklch(var(--degraded) / 0.16);
+    color: oklch(var(--degraded));
+    border: 1px solid oklch(var(--degraded) / 0.4);
+    border-radius: calc(var(--radius) - 2px);
+    padding: 0.125rem 0.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+}
