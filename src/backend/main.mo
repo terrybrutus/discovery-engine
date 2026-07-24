@@ -17,6 +17,7 @@ import Principal "mo:core/Principal";
 import RunsTypes "types/runs";
 import RunsLib "lib/runs";
 import RunsApi "mixins/runs-api";
+import DefinitionRegistryApi "mixins/definition-registry-api";
 
 actor {
   let accessControlState : AccessControl.AccessControlState;
@@ -32,6 +33,12 @@ actor {
 
   include MixinAuthorization(accessControlState, null);
   include RunsApi(runs, nextRunId);
+
+  // The user's reviewed indicator definitions, serialized as the versioned
+  // registry JSON used by the frontend. Keeping one document per Principal
+  // makes synchronization atomic and keeps definitions private by default.
+  let definitionRegistries : Map.Map<Principal, Text>;
+  include DefinitionRegistryApi(definitionRegistries);
 
   // Render a UserRole variant as its textual tag so it can travel through
   // OQL's scalar Value (which has no variant arm).

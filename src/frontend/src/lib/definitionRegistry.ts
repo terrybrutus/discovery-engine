@@ -311,7 +311,12 @@ export function importDefinitions(json: string): IndicatorDefinition[] {
   const byId = new Map(
     readCustomDefinitions().map((definition) => [definition.id, definition]),
   );
-  for (const definition of definitions) byId.set(definition.id, definition);
+  for (const definition of definitions) {
+    const existing = byId.get(definition.id);
+    if (!existing || definition.updatedAt >= existing.updatedAt) {
+      byId.set(definition.id, definition);
+    }
+  }
   const merged = [...byId.values()];
   writeCustomDefinitions(merged);
   return merged;
@@ -380,8 +385,20 @@ export function resolveDefinition(
   label: string,
   values: number[],
 ): IndicatorDefinition {
+  const normalizedLabel = normalized(label);
+  const storedMatch = readCustomDefinitions()
+    .filter(
+      (definition) =>
+        definition.reviewed &&
+        [definition.canonicalName, ...definition.aliases].some(
+          (candidate) => normalized(candidate) === normalizedLabel,
+        ),
+    )
+    .sort((a, b) => b.updatedAt - a.updatedAt)[0];
+
   return (
     (definitionId ? getDefinition(definitionId) : undefined) ??
+    (storedMatch ? clone(storedMatch) : undefined) ??
     inferDefinition(label, values)
   );
 }

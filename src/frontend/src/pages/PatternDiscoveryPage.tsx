@@ -78,8 +78,8 @@ export default function PatternDiscoveryPage() {
   const deleteRunAction = useEngineStore((s) => s.deleteRunAction);
 
   const { actor } = useActor<Backend>(createActor);
-  const { identity, login, isLoggingIn } = useInternetIdentity();
-  const isSignedIn = identity !== null && actor !== null;
+  const { login, isLoggingIn, isAuthenticated } = useInternetIdentity();
+  const isSignedIn = isAuthenticated && actor !== null;
 
   const [selected, setSelected] = useState<Pattern | null>(null);
   const [modalOpen, setModalOpen] = useState(false);

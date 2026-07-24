@@ -31,7 +31,7 @@ function formatTimestamp(ns: number): string {
  */
 export function SavedRunsPage() {
   const { actor } = useActor<Backend>(createActor);
-  const { identity, login, isLoggingIn } = useInternetIdentity();
+  const { login, isLoggingIn, isAuthenticated } = useInternetIdentity();
 
   const savedRuns = useEngineStore((s) => s.savedRuns);
   const savedRunsLoading = useEngineStore((s) => s.savedRunsLoading);
@@ -44,7 +44,7 @@ export function SavedRunsPage() {
   const [loadingRunId, setLoadingRunId] = useState<number | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  const isSignedIn = identity !== null && actor !== null;
+  const isSignedIn = isAuthenticated && actor !== null;
 
   // Fetch the saved runs list on mount when the user is signed in.
   useEffect(() => {

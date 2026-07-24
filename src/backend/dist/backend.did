@@ -114,14 +114,17 @@ service : {
   _internet_identity_sign_in_finish: () -> (Result__1);
   _internet_identity_sign_in_start: () -> (blob);
   assignCallerUserRole: (user: principal, role: UserRole) -> ();
+  deleteMyDefinitionRegistry: () -> (bool);
   deleteMyRun: (runId: nat) -> (bool);
   execute: (qJson: text) -> (Result) query;
   getCallerUserRole: () -> (UserRole) query;
+  getMyDefinitionRegistry: () -> (opt text) query;
   getMyRun: (runId: nat) -> (opt SavedRun);
   getMyRuns: (runIds: vec nat) -> (vec SavedRun);
   isCallerAdmin: () -> (bool) query;
   listMyRunSummaries: () -> (vec SavedRunSummary);
   listMyRuns: () -> (vec SavedRun);
+  saveMyDefinitionRegistry: (registryJson: text) -> (text);
   saveRun: (run: SavedRun) -> (SavedRun);
   schema: () -> (text) query;
 }

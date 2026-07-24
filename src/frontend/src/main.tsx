@@ -19,7 +19,7 @@ const queryClient = new QueryClient();
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <QueryClientProvider client={queryClient}>
-    <InternetIdentityProvider>
+    <InternetIdentityProvider withAttributes={false}>
       {/* App-root error boundary: any uncaught render crash shows a
           recoverable error screen instead of a black screen. The boundary
           never touches the Zustand store, so in-memory data survives. */}

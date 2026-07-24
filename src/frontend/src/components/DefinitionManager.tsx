@@ -1,3 +1,5 @@
+import { createActor } from "@/backend";
+import type { Backend } from "@/backend";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -13,10 +15,13 @@ import {
 } from "@/lib/geminiDefinitionCompiler";
 import { useEngineStore } from "@/store/engineStore";
 import type { IndicatorDefinition } from "@/types";
+import { useActor, useInternetIdentity } from "@caffeineai/core-infrastructure";
 import { BrainCircuit, Download, KeyRound, Upload } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 export function DefinitionManager() {
+  const { actor } = useActor<Backend>(createActor);
+  const { isAuthenticated } = useInternetIdentity();
   const datasets = useEngineStore((state) => state.datasets);
   const selectedDatasetIds = useEngineStore(
     (state) => state.selectedDatasetIds,
@@ -34,6 +39,7 @@ export function DefinitionManager() {
     listDefinitions(),
   );
   const importRef = useRef<HTMLInputElement>(null);
+  const syncedPrincipalRef = useRef("");
   const selected = useMemo(
     () => datasets.filter((dataset) => selectedDatasetIds.includes(dataset.id)),
     [datasets, selectedDatasetIds],
@@ -42,6 +48,38 @@ export function DefinitionManager() {
     () => previewDefinitionCompilation(selected, pineSource, notes),
     [selected, pineSource, notes],
   );
+
+  const persistRegistry = async (): Promise<void> => {
+    if (!isAuthenticated || actor === null) return;
+    await actor.saveMyDefinitionRegistry(exportDefinitions());
+  };
+
+  useEffect(() => {
+    if (!isAuthenticated || actor === null) {
+      syncedPrincipalRef.current = "";
+      return;
+    }
+    const syncKey = "authenticated";
+    if (syncedPrincipalRef.current === syncKey) return;
+    syncedPrincipalRef.current = syncKey;
+    void (async () => {
+      try {
+        const remote = await actor.getMyDefinitionRegistry();
+        if (remote) importDefinitions(remote);
+        await actor.saveMyDefinitionRegistry(exportDefinitions());
+        setDefinitions(listDefinitions());
+        generateFeatures();
+        setMessage("Definitions synchronized with your Internet Identity.");
+      } catch (error) {
+        syncedPrincipalRef.current = "";
+        setMessage(
+          error instanceof Error
+            ? `Definition sync failed: ${error.message}`
+            : "Definition sync failed.",
+        );
+      }
+    })();
+  }, [actor, generateFeatures, isAuthenticated]);
 
   const compile = async () => {
     setRunning(true);
@@ -68,7 +106,7 @@ export function DefinitionManager() {
     }
   };
 
-  const acceptProposals = () => {
+  const acceptProposals = async () => {
     const accepted = proposals.map((definition) =>
       saveDefinition({ ...definition, reviewed: true, updatedAt: Date.now() }),
     );
@@ -86,7 +124,20 @@ export function DefinitionManager() {
     setDefinitions(listDefinitions());
     setProposals([]);
     generateFeatures();
-    setMessage(`Accepted and saved ${accepted.length} reusable definitions.`);
+    try {
+      await persistRegistry();
+      setMessage(
+        isAuthenticated
+          ? `Accepted and saved ${accepted.length} reusable definitions to your Internet Identity.`
+          : `Accepted ${accepted.length} definitions in this browser. Sign in to sync them across devices.`,
+      );
+    } catch (error) {
+      setMessage(
+        error instanceof Error
+          ? `Definitions saved locally, but identity sync failed: ${error.message}`
+          : "Definitions saved locally, but identity sync failed.",
+      );
+    }
   };
 
   const discardProposals = () => {
@@ -109,7 +160,12 @@ export function DefinitionManager() {
     try {
       const imported = importDefinitions(await file.text());
       setDefinitions(listDefinitions());
-      setMessage(`Imported ${imported.length} reusable definitions.`);
+      await persistRegistry();
+      setMessage(
+        isAuthenticated
+          ? `Imported and synchronized ${imported.length} reusable definitions.`
+          : `Imported ${imported.length} definitions in this browser. Sign in to sync them.`,
+      );
       generateFeatures();
     } catch (error) {
       setMessage(
@@ -258,7 +314,11 @@ export function DefinitionManager() {
             ))}
           </div>
           <div className="mt-3 flex gap-2">
-            <Button type="button" size="sm" onClick={acceptProposals}>
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => void acceptProposals()}
+            >
               Accept & Save All
             </Button>
             <Button

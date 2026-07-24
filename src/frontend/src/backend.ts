@@ -190,14 +190,17 @@ export interface backendInterface {
     _internet_identity_sign_in_finish(): Promise<Result__1>;
     _internet_identity_sign_in_start(): Promise<Uint8Array>;
     assignCallerUserRole(user: Principal, role: UserRole): Promise<void>;
+    deleteMyDefinitionRegistry(): Promise<boolean>;
     deleteMyRun(runId: bigint): Promise<boolean>;
     execute(qJson: string): Promise<Result>;
     getCallerUserRole(): Promise<UserRole>;
+    getMyDefinitionRegistry(): Promise<string | null>;
     getMyRun(runId: bigint): Promise<SavedRun | null>;
     getMyRuns(runIds: Array<bigint>): Promise<Array<SavedRun>>;
     isCallerAdmin(): Promise<boolean>;
     listMyRunSummaries(): Promise<Array<SavedRunSummary>>;
     listMyRuns(): Promise<Array<SavedRun>>;
+    saveMyDefinitionRegistry(registryJson: string): Promise<string>;
     saveRun(run: SavedRun): Promise<SavedRun>;
     schema(): Promise<string>;
 }
@@ -260,6 +263,17 @@ export class Backend implements backendInterface {
             return result;
         }
     }
+    async deleteMyDefinitionRegistry(): Promise<boolean> {
+        if (this.processError) {
+            try {
+                return await this.actor.deleteMyDefinitionRegistry();
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        }
+        return this.actor.deleteMyDefinitionRegistry();
+    }
     async deleteMyRun(arg0: bigint): Promise<boolean> {
         if (this.processError) {
             try {
@@ -301,6 +315,10 @@ export class Backend implements backendInterface {
             const result = await this.actor.getCallerUserRole();
             return from_candid_UserRole_n15(this._uploadFile, this._downloadFile, result);
         }
+    }
+    async getMyDefinitionRegistry(): Promise<string | null> {
+        const result = await this.actor.getMyDefinitionRegistry();
+        return result.length > 0 ? result[0] : null;
     }
     async getMyRun(arg0: bigint): Promise<SavedRun | null> {
         if (this.processError) {
@@ -371,6 +389,17 @@ export class Backend implements backendInterface {
             const result = await this.actor.listMyRuns();
             return result;
         }
+    }
+    async saveMyDefinitionRegistry(arg0: string): Promise<string> {
+        if (this.processError) {
+            try {
+                return await this.actor.saveMyDefinitionRegistry(arg0);
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        }
+        return this.actor.saveMyDefinitionRegistry(arg0);
     }
     async saveRun(arg0: SavedRun): Promise<SavedRun> {
         if (this.processError) {

@@ -1,7 +1,16 @@
 import { LoadDataModal } from "@/components/LoadDataModal";
 import { Button } from "@/components/ui/button";
 import { useEngineStore } from "@/store/engineStore";
-import { Activity, Database, Layers, Upload } from "lucide-react";
+import { useInternetIdentity } from "@caffeineai/core-infrastructure";
+import {
+  Activity,
+  Database,
+  Layers,
+  LogIn,
+  LogOut,
+  Upload,
+  UserRound,
+} from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -20,6 +29,20 @@ export function Header() {
   const targetMode = useEngineStore((s) => s.targetMode);
   const loadSampleDataset = useEngineStore((s) => s.loadSampleDataset);
   const [loadModalOpen, setLoadModalOpen] = useState(false);
+  const {
+    identity,
+    login,
+    clear,
+    isAuthenticated,
+    isInitializing,
+    isLoggingIn,
+    loginError,
+  } = useInternetIdentity();
+  const principal = identity?.getPrincipal().toText() ?? "";
+  const principalLabel =
+    principal.length > 13
+      ? `${principal.slice(0, 7)}…${principal.slice(-5)}`
+      : principal;
 
   const total = datasets.length;
   const selectedRows = datasets
@@ -106,6 +129,44 @@ export function Header() {
           <span className="hidden sm:inline">Use Sample</span>
           <span className="sm:hidden">Sample</span>
         </Button>
+        {isAuthenticated ? (
+          <div className="flex items-center gap-1">
+            <div
+              className="hidden items-center gap-1.5 rounded-md border border-primary/30 bg-primary/10 px-2.5 py-1.5 text-xs text-foreground lg:flex"
+              title={`Signed in as ${principal}`}
+            >
+              <UserRound className="size-3.5 text-primary" aria-hidden="true" />
+              <span className="font-mono">{principalLabel}</span>
+            </div>
+            <Button
+              data-ocid="header.sign_out_button"
+              variant="ghost"
+              size="sm"
+              onClick={clear}
+              title="Sign out of Internet Identity"
+            >
+              <LogOut className="size-4" aria-hidden="true" />
+              <span className="hidden xl:inline">Sign out</span>
+            </Button>
+          </div>
+        ) : (
+          <Button
+            data-ocid="header.sign_in_button"
+            size="sm"
+            onClick={login}
+            disabled={isInitializing || isLoggingIn}
+            title={loginError?.message}
+          >
+            <LogIn className="size-4" aria-hidden="true" />
+            <span className="hidden md:inline">
+              {isInitializing
+                ? "Checking identity…"
+                : isLoggingIn
+                  ? "Connecting…"
+                  : "Sign in"}
+            </span>
+          </Button>
+        )}
       </div>
 
       <LoadDataModal open={loadModalOpen} onOpenChange={setLoadModalOpen} />
