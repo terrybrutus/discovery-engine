@@ -161,6 +161,10 @@ function conditionMatches(
   const n = typeof v === "number" ? v : Number(v);
   if (Number.isNaN(n)) return false;
   switch (cond.operator) {
+    case "eq":
+      return n === cond.value;
+    case "neq":
+      return n !== cond.value;
     case "gt":
       return n > (cond.value ?? 0);
     case "gte":
@@ -291,6 +295,9 @@ function conditionPhrase(
   // reference the column name directly rather than a feature-code label.
   const v = cond.value ?? 0;
   const hv = cond.highValue ?? 0;
+  if (cond.operator === "eq" && (v === 0 || v === 1)) {
+    return `${fname} is ${v === 1 ? "present" : "absent"}`;
+  }
   if (isCustom) {
     switch (cond.operator) {
       case "gt":
@@ -361,6 +368,9 @@ function conditionLabel(cond: Condition, feature: Feature | undefined): string {
     if (cond.operator === "eq") return `${fname} is ${cond.bucketLabel}`;
     if (cond.operator === "neq") return `${fname} is not ${cond.bucketLabel}`;
   }
+  if (cond.operator === "eq" && (cond.value === 0 || cond.value === 1)) {
+    return `${fname} is ${cond.value === 1 ? "present" : "absent"}`;
+  }
   switch (cond.operator) {
     case "gt":
       return `${fname} > ${cond.value}`;
@@ -382,6 +392,59 @@ function patternLabel(conditions: Condition[], features: Feature[]): string {
   return `When ${conditions
     .map((c) => conditionLabel(c, byId.get(c.featureId)))
     .join(" AND ")}`;
+}
+
+const NON_STATIONARY_BUILT_INS = new Set([
+  "candle_body_size",
+  "candle_range",
+  "trend_slope",
+]);
+
+/**
+ * Raw price levels and running totals are tied to a particular instrument and
+ * price regime. A threshold such as "session high > 48,409" can look
+ * predictive in-sample while conveying no reusable technical relationship.
+ *
+ * Relative/normalised columns remain eligible, even when their names mention
+ * price, so users can upload features such as "distance from resistance pct".
+ */
+function isNonStationaryRawLevel(feature: Feature): boolean {
+  if (NON_STATIONARY_BUILT_INS.has(feature.id)) return true;
+  if (feature.source !== "custom") return false;
+
+  const name = feature.name.toLowerCase().replace(/[_-]+/g, " ");
+  const isNormalised =
+    /\b(?:pct|percent|percentage|ratio|relative|normalized|normalised|distance|change|return|roc|z ?score|percentile|position|location|bandwidth)\b/.test(
+      name,
+    );
+  if (isNormalised) return false;
+
+  const isCumulative =
+    /\b(?:obv|on balance volume|cumulative|cum volume|running total)\b/.test(
+      name,
+    );
+  const isAbsolutePrice =
+    /\b(?:price|vwap|support|resistance|price level)\b/.test(name) ||
+    /\b(?:session|daily|day|weekly|week|monthly|month)\s+(?:average\s+|avg\s+)?(?:open|high|low|close)\b/.test(
+      name,
+    ) ||
+    /\b(?:open|high|low|close)\s+price\b/.test(name);
+
+  return isCumulative || isAbsolutePrice;
+}
+
+function hasBinaryValues(values: (number | string | undefined)[]): boolean {
+  let sawZero = false;
+  let sawOne = false;
+  for (const value of values) {
+    if (value == null) continue;
+    const numeric = typeof value === "number" ? value : Number(value);
+    if (!Number.isFinite(numeric)) continue;
+    if (numeric === 0) sawZero = true;
+    else if (numeric === 1) sawOne = true;
+    else return false;
+  }
+  return sawZero && sawOne;
 }
 
 /**
@@ -408,11 +471,20 @@ function generateCandidates(
   const candidates: Condition[] = [];
   for (const feat of features) {
     if (!feat.enabled) continue;
+    if (isNonStationaryRawLevel(feat)) continue;
     if (feat.type === "categorical" && feat.buckets) {
       for (const b of feat.buckets) {
         candidates.push({ featureId: feat.id, operator: "eq", bucketLabel: b });
       }
     } else if (feat.type === "numeric") {
+      // Uploaded indicator/signal columns are commonly encoded as 0/1. Treat
+      // them as categorical states instead of inventing thresholds such as
+      // "Piercing Line < 0.6".
+      if (hasBinaryValues(matrix[feat.id] ?? [])) {
+        candidates.push({ featureId: feat.id, operator: "eq", value: 0 });
+        candidates.push({ featureId: feat.id, operator: "eq", value: 1 });
+        continue;
+      }
       const ov = overrides[feat.id];
       // Explicit threshold overrides replace auto-quartile thresholds.
       if (ov?.thresholds && ov.thresholds.length > 0) {
@@ -914,6 +986,7 @@ async function evaluateAllPatterns(
   quiet: boolean,
 ): Promise<Pattern[]> {
   const patterns: Pattern[] = [];
+  const seenMatchSets = new Set<string>();
   let tested = 0;
 
   // Yield to the main thread every YIELD_EVERY combinations or every
@@ -980,49 +1053,53 @@ async function evaluateAllPatterns(
             ratioMode === "off" ||
             passesRatioFilter(result.mfeMaeRatio, ratioThreshold);
           if (ratioOk) {
-            const score = scorePattern(
-              result.metrics.winRate,
-              result.metrics.sampleSize,
-              Math.abs(margin),
-            );
-            const sentence = buildPlainEnglishSentence(
-              conds,
-              features,
-              result.metrics.direction,
-              horizon,
-            );
-            const coverage = computePatternCoverage(
-              bars,
-              result.matches,
-              result.metrics,
-              /* datasetName */ "",
-              /* timeframe */ "unknown",
-            );
-            patterns.push({
-              id: `p_${patterns.length}`,
-              conditions: conds,
-              label: patternLabel(conds, features),
-              plainEnglishSentence: sentence,
-              coverage,
-              direction: result.metrics.direction,
-              winRate: result.metrics.winRate,
-              avgMove: result.metrics.avgMove,
-              avgMAE: result.metrics.avgMAE,
-              avgMFE: result.metrics.avgMFE,
-              // Carry the direction-adjusted ratio through to the pattern.
-              // Infinity (zero MAE) is stored as undefined so the field stays
-              // a finite, serializable number for persistence + UI.
-              mfeMaeRatio: Number.isFinite(result.mfeMaeRatio)
-                ? result.mfeMaeRatio
-                : undefined,
-              sampleSize: result.metrics.sampleSize,
-              confidence: confidenceRating(
+            const matchSetKey = result.matches.join(",");
+            if (!seenMatchSets.has(matchSetKey)) {
+              seenMatchSets.add(matchSetKey);
+              const score = scorePattern(
                 result.metrics.winRate,
                 result.metrics.sampleSize,
-              ),
-              score,
-              horizon,
-            });
+                Math.abs(margin),
+              );
+              const sentence = buildPlainEnglishSentence(
+                conds,
+                features,
+                result.metrics.direction,
+                horizon,
+              );
+              const coverage = computePatternCoverage(
+                bars,
+                result.matches,
+                result.metrics,
+                /* datasetName */ "",
+                /* timeframe */ "unknown",
+              );
+              patterns.push({
+                id: `p_${patterns.length}`,
+                conditions: conds,
+                label: patternLabel(conds, features),
+                plainEnglishSentence: sentence,
+                coverage,
+                direction: result.metrics.direction,
+                winRate: result.metrics.winRate,
+                avgMove: result.metrics.avgMove,
+                avgMAE: result.metrics.avgMAE,
+                avgMFE: result.metrics.avgMFE,
+                // Carry the direction-adjusted ratio through to the pattern.
+                // Infinity (zero MAE) is stored as undefined so the field stays
+                // a finite, serializable number for persistence + UI.
+                mfeMaeRatio: Number.isFinite(result.mfeMaeRatio)
+                  ? result.mfeMaeRatio
+                  : undefined,
+                sampleSize: result.metrics.sampleSize,
+                confidence: confidenceRating(
+                  result.metrics.winRate,
+                  result.metrics.sampleSize,
+                ),
+                score,
+                horizon,
+              });
+            }
           }
         }
       }
