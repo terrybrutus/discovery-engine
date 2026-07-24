@@ -56,9 +56,9 @@ const COLUMNS: ColumnDef[] = [
   { key: "conditions", label: "Conditions", sortable: false, align: "left" },
   { key: "sampleSize", label: "Sample", sortable: true, align: "right" },
   { key: "winRate", label: "Win Rate", sortable: true, align: "right" },
-  { key: "avgMove", label: "Avg Move", sortable: true, align: "right" },
-  { key: "mae", label: "MAE (proxy)", sortable: false, align: "right" },
-  { key: "mfe", label: "MFE (proxy)", sortable: false, align: "right" },
+  { key: "avgMove", label: "Avg Move %", sortable: true, align: "right" },
+  { key: "mae", label: "MAE % (proxy)", sortable: false, align: "right" },
+  { key: "mfe", label: "MFE % (proxy)", sortable: false, align: "right" },
   { key: "ratio", label: "Ratio", sortable: false, align: "right" },
   { key: "confidence", label: "Confidence", sortable: true, align: "left" },
 ];
@@ -93,7 +93,7 @@ function winRateClass(winRate: number): string {
 function formatPrice(n: number): string {
   if (n == null || Number.isNaN(n)) return "—";
   const sign = n > 0 ? "+" : n < 0 ? "−" : "";
-  return `${sign}${Math.abs(n).toFixed(2)}`;
+  return `${sign}${Math.abs(n).toFixed(2)}%`;
 }
 
 interface PatternResultsTableProps {
@@ -279,6 +279,20 @@ export function PatternResultsTable({
                     <span className="text-[10px] text-muted-foreground">
                       · {p.horizon}-bar hold
                     </span>
+                    {p.liftVsBaseline != null ? (
+                      <span className="text-[10px] font-mono text-primary">
+                        · +{p.liftVsBaseline.toFixed(1)}pp vs baseline
+                      </span>
+                    ) : null}
+                    {p.validationStatus === "held" ? (
+                      <span className="text-[10px] font-medium uppercase text-primary">
+                        · held OOS
+                      </span>
+                    ) : p.validationStatus === "degraded" ? (
+                      <span className="text-[10px] font-medium uppercase text-destructive">
+                        · degraded OOS
+                      </span>
+                    ) : null}
                   </span>
                 </div>
               </TableCell>
@@ -310,10 +324,10 @@ export function PatternResultsTable({
                 {formatPrice(p.avgMove)}
               </TableCell>
               <TableCell className="px-3 py-2.5 text-right font-mono tabular-nums text-muted-foreground">
-                {fmtNum(p.avgMAE)}
+                {`${fmtNum(p.avgMAE)}%`}
               </TableCell>
               <TableCell className="px-3 py-2.5 text-right font-mono tabular-nums text-muted-foreground">
-                {fmtNum(p.avgMFE)}
+                {`${fmtNum(p.avgMFE)}%`}
               </TableCell>
               <TableCell
                 className="px-3 py-2.5 text-right font-mono tabular-nums text-foreground"

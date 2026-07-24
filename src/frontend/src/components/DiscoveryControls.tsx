@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
-import { runDiscovery } from "@/lib/discovery";
+import { isFeatureEligibleForDiscovery, runDiscovery } from "@/lib/discovery";
 import type { FeatureOverride, FeatureOverrides } from "@/lib/features";
 import { cn } from "@/lib/utils";
 import { selectFeatureCategories, useEngineStore } from "@/store/engineStore";
@@ -134,7 +134,11 @@ export function DiscoveryControls({
   // Numeric features only — categorical features have buckets, not ranges,
   // so manual range overrides only apply to numeric features.
   const numericFeatures = useMemo(
-    () => features.filter((f) => f.type === "numeric"),
+    () =>
+      features.filter(
+        (feature) =>
+          feature.type === "numeric" && isFeatureEligibleForDiscovery(feature),
+      ),
     [features],
   );
 
@@ -768,15 +772,18 @@ export function DiscoveryControls({
       <div className={cn("flex flex-col gap-3", disabled && "opacity-60")}>
         <div className="flex items-baseline justify-between">
           <span className="text-sm font-medium text-foreground">
-            Feature range overrides
+            Manual threshold search bounds
           </span>
           <span className="text-[11px] text-muted-foreground">
-            auto-quartile + manual
+            empirical quantiles by default
           </span>
         </div>
         <p className="text-xs text-muted-foreground">
-          Each numeric feature shows its auto-quartile range. Enter manual
-          min/max to override; reset restores the auto-quartile bounds.
+          By default, thresholds come from the feature’s actual 20th, 40th,
+          60th, and 80th percentiles. Editing min/max replaces those empirical
+          thresholds with four evenly spaced thresholds inside your manual
+          bounds and can materially change the discovered patterns. Reset
+          restores empirical quantiles.
         </p>
         {numericFeatures.length === 0 ? (
           <p className="text-xs text-muted-foreground italic">
@@ -786,7 +793,23 @@ export function DiscoveryControls({
           <div className="flex flex-col gap-2.5">
             {numericFeatures.map((f) => {
               const override = featureOverrides[f.id];
-              const autoRange: [number, number] = f.range ?? [0, 1];
+              const observed = (featureValues?.[f.id] ?? []).filter(
+                (value): value is number =>
+                  typeof value === "number" && Number.isFinite(value),
+              );
+              const autoRange: [number, number] =
+                observed.length > 0
+                  ? [
+                      observed.reduce(
+                        (minimum, value) => Math.min(minimum, value),
+                        Number.POSITIVE_INFINITY,
+                      ),
+                      observed.reduce(
+                        (maximum, value) => Math.max(maximum, value),
+                        Number.NEGATIVE_INFINITY,
+                      ),
+                    ]
+                  : (f.range ?? [0, 1]);
               const effective: [number, number] = override?.range ?? autoRange;
               const isOverridden = Boolean(override);
               return (
@@ -812,7 +835,7 @@ export function DiscoveryControls({
                     ) : null}
                   </div>
                   <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                    <span>auto:</span>
+                    <span>observed:</span>
                     <span className="font-mono tabular-nums">
                       {autoRange[0].toFixed(2)} – {autoRange[1].toFixed(2)}
                     </span>

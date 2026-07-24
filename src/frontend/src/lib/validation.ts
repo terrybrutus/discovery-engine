@@ -101,8 +101,8 @@ function matchesAll(
  * Measure pattern metrics over a set of matched bar indices. Uses the
  * pattern's own `horizon` for the forward window (consistent with the
  * discovery engine). MFE/MAE is direction-adjusted to mirror discovery's
- * `evaluatePattern`: raw excursions are upExcursion = maxHigh - entry and
- * downExcursion = entry - minLow; the pattern's dominant direction is
+ * `evaluatePattern`: excursions are normalized to entry-price percentages;
+ * the pattern's dominant direction is
  * derived from the matches (bullCount vs bearCount by return sign, matching
  * discovery), then for bearish patterns the favorable/adverse labeling is
  * swapped so MFE = downExcursion and MAE = upExcursion. This keeps the
@@ -146,11 +146,12 @@ function measureMetrics(
       if (bars[k].high > maxHigh) maxHigh = bars[k].high;
       if (bars[k].low < minLow) minLow = bars[k].low;
     }
-    const ret = bars[exitIdx].close - entry;
+    const scale = Math.abs(entry) > 1e-9 ? Math.abs(entry) : 1;
+    const ret = ((bars[exitIdx].close - entry) / scale) * 100;
     rets[m] = ret;
     sumRet += ret;
-    sumUpExcursion += maxHigh - entry;
-    sumDownExcursion += entry - minLow;
+    sumUpExcursion += ((maxHigh - entry) / scale) * 100;
+    sumDownExcursion += ((entry - minLow) / scale) * 100;
     if (ret > 0) bull++;
     else if (ret < 0) bear++;
   }
@@ -224,6 +225,8 @@ function findMatchesInRange(
 export interface SurvivalDataset {
   dataset: Dataset;
   matrix: FeatureMatrix;
+  /** Equivalent real-time hold window expressed in this dataset's bars. */
+  horizon?: number;
 }
 
 /**
@@ -382,7 +385,7 @@ export function validatePatterns(
       // Primary dataset profitability: use the pooled (in+out) matches we
       // already computed. A pattern is profitable when its average move is
       // in its dominant direction.
-      const primaryMatches = [...inSampleMatches, ...outOfSampleMatches];
+      const primaryMatches = outOfSampleMatches;
       if (primaryMatches.length > 0) {
         evaluated++;
         let sumRet = 0;
@@ -401,18 +404,23 @@ export function validatePatterns(
       }
       // Additional datasets: re-evaluate matches on each dataset's bars
       // using its own feature matrix.
-      for (const { dataset: ds, matrix: mx } of additionalDatasets) {
+      for (const {
+        dataset: ds,
+        matrix: mx,
+        horizon: datasetHorizon = pattern.horizon,
+      } of additionalDatasets) {
         const lk = new Map<string, FeatureLookup>();
         for (const f of features) {
           if (mx[f.id]) lk.set(f.id, { feature: f, values: mx[f.id] });
         }
+        const outOfSampleStart = Math.floor(ds.bars.length * 0.7);
         const dsMatches = findMatchesInRange(
           ds.bars,
           pattern.conditions,
           lk,
-          0,
+          outOfSampleStart,
           ds.bars.length,
-          pattern.horizon,
+          datasetHorizon,
         );
         if (dsMatches.length === 0) {
           // No matches on this dataset: not profitable, but still counts
@@ -423,7 +431,7 @@ export function validatePatterns(
         evaluated++;
         let sumRet = 0;
         for (const idx of dsMatches) {
-          const exitIdx = idx + pattern.horizon;
+          const exitIdx = idx + datasetHorizon;
           if (exitIdx >= ds.bars.length) continue;
           sumRet += ds.bars[exitIdx].close - ds.bars[idx].close;
         }

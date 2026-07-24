@@ -146,9 +146,15 @@ export interface Pattern {
   label: string;
   direction: Direction;
   winRate: number; // 0-100
-  avgMove: number; // average forward return in price units
-  avgMAE: number; // average max adverse excursion
-  avgMFE: number; // average max favorable excursion
+  /** Unconditional directional win rate for the same hold window. */
+  baselineWinRate?: number;
+  /** Pattern win rate minus baselineWinRate, in percentage points. */
+  liftVsBaseline?: number;
+  /** Automatic out-of-sample audit status for top-ranked candidates. */
+  validationStatus?: "held" | "degraded" | "not-tested";
+  avgMove: number; // average forward return in percent
+  avgMAE: number; // average max adverse excursion in percent
+  avgMFE: number; // average max favorable excursion in percent
   sampleSize: number;
   confidence: Confidence;
   /** Composite ranking score (higher = stronger). */

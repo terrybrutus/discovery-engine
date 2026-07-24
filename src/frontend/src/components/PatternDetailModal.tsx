@@ -367,11 +367,24 @@ export function PatternDetailModal({
                 hint="share of bars moving in the pattern's direction"
               />
               <MetricRow
+                label="Lift vs baseline"
+                value={
+                  pattern.liftVsBaseline == null
+                    ? "—"
+                    : `+${pattern.liftVsBaseline.toFixed(1)}pp`
+                }
+                hint={
+                  pattern.baselineWinRate == null
+                    ? "improvement over the unconditional directional rate"
+                    : `baseline ${pattern.baselineWinRate.toFixed(1)}% for the same hold window`
+                }
+              />
+              <MetricRow
                 label="Average move"
                 value={
                   pattern.avgMove == null || Number.isNaN(pattern.avgMove)
                     ? "—"
-                    : `${pattern.avgMove > 0 ? "+" : pattern.avgMove < 0 ? "−" : ""}${Math.abs(pattern.avgMove).toFixed(2)}`
+                    : `${pattern.avgMove > 0 ? "+" : pattern.avgMove < 0 ? "−" : ""}${Math.abs(pattern.avgMove).toFixed(2)}%`
                 }
                 valueClass={avgMoveValueClass}
                 hint="mean forward return over the hold"
@@ -385,13 +398,13 @@ export function PatternDetailModal({
             <div className="flex flex-col divide-y divide-border">
               <MetricRow
                 label="Avg MFE (proxy)"
-                value={fmtNum(pattern.avgMFE)}
+                value={`${fmtNum(pattern.avgMFE)}%`}
                 hint="window-based max favorable excursion"
                 tooltip={PROXY_TOOLTIP}
               />
               <MetricRow
                 label="Avg MAE (proxy)"
-                value={fmtNum(pattern.avgMAE)}
+                value={`${fmtNum(pattern.avgMAE)}%`}
                 hint="window-based max adverse excursion"
                 tooltip={PROXY_TOOLTIP}
               />

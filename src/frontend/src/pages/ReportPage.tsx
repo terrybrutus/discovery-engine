@@ -40,7 +40,7 @@ export default function ReportPage() {
   // ---- Empty state: no discovery run active ----
   // Per requirements, render a clear empty state when no report is available
   // or no patterns exist. Guide the user to run a discovery first.
-  if (!hasReport || !hasRun) {
+  if (!hasRun) {
     const goToDiscovery = () => setActiveTab("discovery" as TabId);
     return (
       <div data-ocid="page.report" className="flex flex-col gap-4 p-4 md:p-6">
@@ -52,6 +52,21 @@ export default function ReportPage() {
           hint="You can also adjust discovery settings and re-run to find stronger patterns before generating the report."
           actionLabel="Go to Discovery"
           onAction={goToDiscovery}
+        />
+      </div>
+    );
+  }
+
+  if (!hasReport) {
+    return (
+      <div data-ocid="page.report" className="flex flex-col gap-4 p-4 md:p-6">
+        <PageHeader />
+        <EmptyState
+          icon={FileBarChart}
+          title="Build the research brief"
+          description="Discovery and automatic validation are complete. Generate a structured report covering every selected dataset, the strongest validated patterns, baseline lift, and cross-timeframe findings."
+          actionLabel="Generate Report"
+          onAction={generateReportAction}
         />
       </div>
     );

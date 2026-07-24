@@ -11,6 +11,7 @@ import type { CustomColumn } from "@/lib/features";
 import { generateReport } from "@/lib/report";
 import { getSampleDataset } from "@/lib/sampleData";
 import { validatePatterns } from "@/lib/validation";
+import type { SurvivalDataset } from "@/lib/validation";
 import { BUILTIN_CATEGORIES } from "@/types";
 import type {
   CompletedStep,
@@ -73,8 +74,13 @@ interface EngineState {
   datasets: Dataset[];
   /** Id of the currently active dataset, or null if none. */
   activeDatasetId: string | null;
+  /** Datasets included in discovery, validation, and timeframe alignment. */
+  selectedDatasetIds: string[];
   features: Feature[];
   featureValues: FeatureMatrix | null;
+  /** Generated feature catalogs and matrices retained for every dataset. */
+  featuresByDataset: Record<string, Feature[]>;
+  featureValuesByDataset: Record<string, FeatureMatrix>;
   patterns: Pattern[];
   validationResults: ValidationResult[];
   /** Cross-timeframe correlation results across multiple datasets. */
@@ -113,6 +119,8 @@ interface EngineState {
   removeDataset: (id: string) => void;
   /** Set the active dataset by id. */
   setActiveDataset: (id: string) => void;
+  /** Include or exclude a dataset from multi-dataset research. */
+  toggleDatasetSelected: (id: string) => void;
   /** Rename a dataset's user-facing label. */
   renameDataset: (id: string, label: string) => void;
   /** Backward-compatible: equivalent to addDataset. */
@@ -162,12 +170,48 @@ export function selectFeatureCategories(state: EngineState): FeatureCategory[] {
 // Cancellation flag held outside React state to avoid re-renders.
 let cancelFlag = { cancelled: false };
 
+function buildDatasetFeatures(
+  dataset: Dataset,
+  overrides: FeatureOverrides,
+): { features: Feature[]; matrix: FeatureMatrix } {
+  const customColumns: CustomColumn[] = (dataset.columns ?? [])
+    .filter((column) => column.type === "numeric")
+    .map((column) => ({ label: column.label, key: column.key }));
+  const features = generateFeatures(dataset.bars, customColumns, overrides);
+  const matrix = computeFeatureValues(
+    dataset.bars,
+    features,
+    dataset.columnValues ?? {},
+  );
+  return { features, matrix };
+}
+
+function timeframeMinutes(timeframe: Dataset["timeframe"]): number {
+  switch (timeframe) {
+    case "1m":
+      return 1;
+    case "5m":
+      return 5;
+    case "15m":
+      return 15;
+    case "1h":
+      return 60;
+    case "1d":
+      return 1440;
+    default:
+      return 1;
+  }
+}
+
 export const useEngineStore = create<EngineState>((set, get) => ({
   dataset: null,
   datasets: [],
   activeDatasetId: null,
+  selectedDatasetIds: [],
   features: [],
   featureValues: null,
+  featuresByDataset: {},
+  featureValuesByDataset: {},
   patterns: [],
   validationResults: [],
   crossReferenceResults: [],
@@ -194,11 +238,13 @@ export const useEngineStore = create<EngineState>((set, get) => ({
       return {
         datasets,
         activeDatasetId: dataset.id,
+        selectedDatasetIds: [...state.selectedDatasetIds, dataset.id],
         dataset,
         features: [],
         featureValues: null,
         patterns: [],
         validationResults: [],
+        crossReferenceResults: [],
         report: null,
         discoveryProgress: DEFAULT_PROGRESS,
         completedSteps: new Set<CompletedStep>(["dataLoaded"]),
@@ -211,6 +257,13 @@ export const useEngineStore = create<EngineState>((set, get) => ({
   removeDataset: (id) => {
     set((state) => {
       const datasets = state.datasets.filter((d) => d.id !== id);
+      const selectedDatasetIds = state.selectedDatasetIds.filter(
+        (datasetId) => datasetId !== id,
+      );
+      const featuresByDataset = { ...state.featuresByDataset };
+      const featureValuesByDataset = { ...state.featureValuesByDataset };
+      delete featuresByDataset[id];
+      delete featureValuesByDataset[id];
       let activeDatasetId = state.activeDatasetId;
       let dataset = state.dataset;
       if (activeDatasetId === id) {
@@ -220,21 +273,33 @@ export const useEngineStore = create<EngineState>((set, get) => ({
           ? (datasets.find((d) => d.id === activeDatasetId) ?? null)
           : null;
       }
-      // If the active dataset changed, clear downstream computation.
-      const clearedDownstream =
-        activeDatasetId !== state.activeDatasetId
-          ? {
-              features: [] as Feature[],
-              featureValues: null as FeatureMatrix | null,
-              patterns: [] as Pattern[],
-              validationResults: [] as ValidationResult[],
-              report: null as Report | null,
-              completedSteps: dataset
-                ? new Set<CompletedStep>(["dataLoaded"])
-                : new Set<CompletedStep>(),
-            }
-          : {};
-      return { datasets, activeDatasetId, dataset, ...clearedDownstream };
+      const cachedFeatures = activeDatasetId
+        ? (featuresByDataset[activeDatasetId] ?? [])
+        : [];
+      const cachedValues = activeDatasetId
+        ? (featureValuesByDataset[activeDatasetId] ?? null)
+        : null;
+      const completedSteps = dataset
+        ? new Set<CompletedStep>(["dataLoaded"])
+        : new Set<CompletedStep>();
+      if (cachedFeatures.length > 0 && cachedValues) {
+        completedSteps.add("featuresGenerated");
+      }
+      return {
+        datasets,
+        selectedDatasetIds,
+        featuresByDataset,
+        featureValuesByDataset,
+        activeDatasetId,
+        dataset,
+        features: cachedFeatures,
+        featureValues: cachedValues,
+        patterns: [],
+        validationResults: [],
+        crossReferenceResults: [],
+        report: null,
+        completedSteps,
+      };
     });
   },
 
@@ -242,21 +307,45 @@ export const useEngineStore = create<EngineState>((set, get) => ({
     set((state) => {
       const dataset = state.datasets.find((d) => d.id === id) ?? null;
       if (!dataset || id === state.activeDatasetId) return {};
+      const cachedFeatures = state.featuresByDataset[id] ?? [];
+      const cachedValues = state.featureValuesByDataset[id] ?? null;
+      const completedSteps = new Set<CompletedStep>(["dataLoaded"]);
+      if (cachedFeatures.length > 0 && cachedValues) {
+        completedSteps.add("featuresGenerated");
+      }
       return {
         activeDatasetId: id,
         dataset,
-        features: [],
-        featureValues: null,
+        features: cachedFeatures,
+        featureValues: cachedValues,
         patterns: [],
         validationResults: [],
         report: null,
         discoveryProgress: DEFAULT_PROGRESS,
-        completedSteps: new Set<CompletedStep>(["dataLoaded"]),
-        activeTab: "features",
+        completedSteps,
+        activeTab: cachedFeatures.length > 0 ? "discovery" : "features",
         lastError: null,
       };
     });
   },
+
+  toggleDatasetSelected: (id) =>
+    set((state) => {
+      const completedSteps = new Set<CompletedStep>(["dataLoaded"]);
+      if (state.features.length > 0 && state.featureValues) {
+        completedSteps.add("featuresGenerated");
+      }
+      return {
+        selectedDatasetIds: state.selectedDatasetIds.includes(id)
+          ? state.selectedDatasetIds.filter((datasetId) => datasetId !== id)
+          : [...state.selectedDatasetIds, id],
+        patterns: [],
+        validationResults: [],
+        crossReferenceResults: [],
+        report: null,
+        completedSteps,
+      };
+    }),
 
   renameDataset: (id, label) => {
     set((state) => {
@@ -281,41 +370,46 @@ export const useEngineStore = create<EngineState>((set, get) => ({
   },
 
   generateFeaturesAction: () => {
-    const { dataset } = get();
+    const { dataset, datasets, selectedDatasetIds } = get();
     if (!dataset) return;
     set({ isComputing: true, lastError: null });
     // Defer to next tick so the UI can show a loading state.
     setTimeout(() => {
       try {
-        // Build the list of custom uploaded numeric columns (excluding the
-        // standard OHLCV/time columns) so they flow into the feature catalog
-        // as their own "Custom Columns" features. `label` is the original
-        // header (preserved verbatim per user preference); `key` is the
-        // normalized key matching Dataset.columnValues.
-        const customColumns: CustomColumn[] = (dataset.columns ?? [])
-          .filter((c) => c.type === "numeric")
-          .map((c) => ({ label: c.label, key: c.key }));
-        const features = generateFeatures(
-          dataset.bars,
-          customColumns,
-          get().featureOverrides,
+        const included = datasets.filter(
+          (candidate) =>
+            selectedDatasetIds.length === 0 ||
+            selectedDatasetIds.includes(candidate.id),
         );
-        const featureValues = computeFeatureValues(
-          dataset.bars,
-          features,
-          dataset.columnValues ?? {},
-        );
+        if (!included.some((candidate) => candidate.id === dataset.id)) {
+          included.unshift(dataset);
+        }
+        const featuresByDataset: Record<string, Feature[]> = {};
+        const featureValuesByDataset: Record<string, FeatureMatrix> = {};
+        for (const candidate of included) {
+          const generated = buildDatasetFeatures(
+            candidate,
+            get().featureOverrides,
+          );
+          featuresByDataset[candidate.id] = generated.features;
+          featureValuesByDataset[candidate.id] = generated.matrix;
+        }
+        const features = featuresByDataset[dataset.id] ?? [];
+        const featureValues = featureValuesByDataset[dataset.id] ?? null;
         const completed = new Set<CompletedStep>(get().completedSteps);
         completed.add("dataLoaded");
         completed.add("featuresGenerated");
         set({
           features,
           featureValues,
+          featuresByDataset,
+          featureValuesByDataset,
           isComputing: false,
           completedSteps: completed,
           // Clear downstream results since features changed.
           patterns: [],
           validationResults: [],
+          crossReferenceResults: [],
           report: null,
         });
       } catch (e) {
@@ -356,10 +450,65 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         get().featureOverrides,
       );
 
+      if (cancelFlag.cancelled) {
+        set({
+          isComputing: false,
+          discoveryProgress: { ...get().discoveryProgress, isRunning: false },
+        });
+        return;
+      }
+
       const completed = new Set<CompletedStep>(get().completedSteps);
       completed.add("discoveryComplete");
+      const { datasets, selectedDatasetIds, featureValuesByDataset } = get();
+      const activeMinutes = timeframeMinutes(dataset.timeframe);
+      const additionalDatasets: SurvivalDataset[] = datasets
+        .filter(
+          (candidate) =>
+            candidate.id !== dataset.id &&
+            selectedDatasetIds.includes(candidate.id) &&
+            featureValuesByDataset[candidate.id],
+        )
+        .map((candidate) => ({
+          dataset: candidate,
+          matrix: featureValuesByDataset[candidate.id],
+          horizon: Math.max(
+            1,
+            Math.round(
+              (discoveryConfig.horizon * activeMinutes) /
+                timeframeMinutes(candidate.timeframe),
+            ),
+          ),
+        }));
+      const validationResults = validatePatterns(
+        dataset,
+        features,
+        featureValues,
+        patterns.slice(0, 20),
+        additionalDatasets,
+      );
+      const validationByPattern = new Map(
+        validationResults.map((result) => [result.patternId, result]),
+      );
+      const patternsWithValidation = patterns.map((pattern) => {
+        const validation = validationByPattern.get(pattern.id);
+        if (!validation) {
+          return { ...pattern, validationStatus: "not-tested" as const };
+        }
+        return {
+          ...pattern,
+          validationStatus: validation.degraded
+            ? ("degraded" as const)
+            : ("held" as const),
+          confidence: validation.degraded
+            ? ("low" as const)
+            : pattern.confidence,
+        };
+      });
+      completed.add("validationComplete");
       set({
-        patterns,
+        patterns: patternsWithValidation,
+        validationResults,
         isComputing: false,
         discoveryProgress: { ...get().discoveryProgress, isRunning: false },
         completedSteps: completed,
@@ -383,23 +532,70 @@ export const useEngineStore = create<EngineState>((set, get) => ({
   },
 
   validateAction: () => {
-    const { dataset, features, featureValues, patterns } = get();
+    const {
+      dataset,
+      datasets,
+      selectedDatasetIds,
+      features,
+      featureValues,
+      featureValuesByDataset,
+      patterns,
+      discoveryConfig,
+    } = get();
     if (!dataset || !features.length || !featureValues || !patterns.length)
       return;
     set({ isComputing: true, lastError: null });
     setTimeout(() => {
       try {
         const topPatterns = patterns.slice(0, 20);
+        const activeMinutes = timeframeMinutes(dataset.timeframe);
+        const additionalDatasets: SurvivalDataset[] = datasets
+          .filter(
+            (candidate) =>
+              candidate.id !== dataset.id &&
+              selectedDatasetIds.includes(candidate.id) &&
+              featureValuesByDataset[candidate.id],
+          )
+          .map((candidate) => ({
+            dataset: candidate,
+            matrix: featureValuesByDataset[candidate.id],
+            horizon: Math.max(
+              1,
+              Math.round(
+                (discoveryConfig.horizon * activeMinutes) /
+                  timeframeMinutes(candidate.timeframe),
+              ),
+            ),
+          }));
         const results = validatePatterns(
           dataset,
           features,
           featureValues,
           topPatterns,
+          additionalDatasets,
         );
         const completed = new Set<CompletedStep>(get().completedSteps);
         completed.add("validationComplete");
+        const validationByPattern = new Map(
+          results.map((result) => [result.patternId, result]),
+        );
         set({
           validationResults: results,
+          patterns: patterns.map((pattern) => {
+            const validation = validationByPattern.get(pattern.id);
+            if (!validation) {
+              return pattern;
+            }
+            return {
+              ...pattern,
+              validationStatus: validation.degraded
+                ? ("degraded" as const)
+                : ("held" as const),
+              confidence: validation.degraded
+                ? ("low" as const)
+                : pattern.confidence,
+            };
+          }),
           isComputing: false,
           completedSteps: completed,
         });
@@ -419,6 +615,8 @@ export const useEngineStore = create<EngineState>((set, get) => ({
       patterns,
       validationResults,
       crossReferenceResults,
+      datasets,
+      selectedDatasetIds,
     } = get();
     if (!dataset || !features.length) return;
     try {
@@ -428,6 +626,9 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         patterns,
         validationResults,
         crossReferenceResults,
+        datasets.filter((candidate) =>
+          selectedDatasetIds.includes(candidate.id),
+        ),
       );
       const completed = new Set<CompletedStep>(get().completedSteps);
       completed.add("reportReady");
@@ -493,8 +694,11 @@ export const useEngineStore = create<EngineState>((set, get) => ({
       dataset: null,
       datasets: [],
       activeDatasetId: null,
+      selectedDatasetIds: [],
       features: [],
       featureValues: null,
+      featuresByDataset: {},
+      featureValuesByDataset: {},
       patterns: [],
       validationResults: [],
       crossReferenceResults: [],
@@ -744,12 +948,15 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         discoveryConfig: restoredConfig,
         datasets: restoredDatasets,
         activeDatasetId: activeDataset?.id ?? null,
+        selectedDatasetIds: restoredDatasets.map((dataset) => dataset.id),
         dataset: activeDataset,
         // Features are not persisted by the backend; clear them so the
         // Features tab reflects the (empty) restored state rather than a
         // stale prior session's features.
         features: [],
         featureValues: null,
+        featuresByDataset: {},
+        featureValuesByDataset: {},
         patterns: restoredPatterns,
         validationResults: restoredValidationResults,
         report: restoredReport,

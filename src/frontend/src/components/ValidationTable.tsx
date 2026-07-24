@@ -304,11 +304,11 @@ function ExpandedDetail({ result: r }: { result: ValidationResult }) {
           />
           <DetailStat
             label="In-Sample MFE / MAE"
-            value={`${r.inSampleMetrics.avgMFE.toFixed(1)} / ${r.inSampleMetrics.avgMAE.toFixed(1)}`}
+            value={`${r.inSampleMetrics.avgMFE.toFixed(2)}% / ${r.inSampleMetrics.avgMAE.toFixed(2)}%`}
           />
           <DetailStat
             label="OOS MFE / MAE"
-            value={`${r.outOfSampleMetrics.avgMFE.toFixed(1)} / ${r.outOfSampleMetrics.avgMAE.toFixed(1)}`}
+            value={`${r.outOfSampleMetrics.avgMFE.toFixed(2)}% / ${r.outOfSampleMetrics.avgMAE.toFixed(2)}%`}
           />
         </div>
       </div>
@@ -435,7 +435,7 @@ function ConditionMiniCard({
         <DetailStat label="Avg Move" value={formatMove(metrics.avgMove)} />
         <DetailStat
           label="MFE / MAE"
-          value={`${metrics.avgMFE.toFixed(1)} / ${metrics.avgMAE.toFixed(1)}`}
+          value={`${metrics.avgMFE.toFixed(2)}% / ${metrics.avgMAE.toFixed(2)}%`}
         />
       </div>
     </div>
@@ -566,7 +566,7 @@ function sortValue(r: ValidationResult, key: SortKey): number {
 
 function formatMove(v: number): string {
   const sign = v > 0 ? "+" : v < 0 ? "" : "";
-  return `${sign}${v.toFixed(2)}`;
+  return `${sign}${v.toFixed(2)}%`;
 }
 
 function formatRatio(v: number | null): string {

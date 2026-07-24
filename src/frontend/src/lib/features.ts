@@ -113,12 +113,12 @@ export interface CustomColumn {
 /**
  * Manual per-feature override for numeric feature bucketing.
  *
- * By default, numeric features use auto-quartile bucketing (the discovery
- * engine derives 4 thresholds evenly across the feature's range). A manual
+ * By default, numeric features use empirical quantile bucketing (the
+ * discovery engine derives thresholds from the observed distribution). A manual
  * override lets the user specify custom threshold values or explicit
  * bucket boundaries for a single feature, replacing the auto-quartile
  * candidates for that feature only. Features without an override keep the
- * auto-quartile default.
+ * empirical-quantile default.
  *
  * Overrides apply during feature catalog generation (so the glossary and UI
  * reflect the user's custom boundaries) and during discovery candidate
@@ -130,13 +130,13 @@ export interface FeatureOverride {
   /**
    * Custom threshold values for `lt`/`gt` candidate conditions. Each
    * threshold generates both a `lt` and a `gt` candidate. When provided,
-   * these replace the auto-quartile thresholds for this feature.
+   * these replace the empirical thresholds for this feature.
    */
   thresholds?: number[];
   /**
    * Custom bucket boundaries for `between` candidate conditions. Each
    * pair generates a `between` candidate. When provided, these replace
-   * the auto-quartile bucketing for this feature.
+   * the empirical quantile bucketing for this feature.
    */
   ranges?: Array<{ low: number; high: number }>;
   /**
@@ -149,7 +149,7 @@ export interface FeatureOverride {
 
 /**
  * Map of per-feature manual overrides, keyed by feature id. Features not
- * present in this map use auto-quartile bucketing (the default).
+ * present in this map use empirical quantile bucketing (the default).
  */
 export type FeatureOverrides = Record<string, FeatureOverride>;
 

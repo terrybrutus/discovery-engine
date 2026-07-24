@@ -404,10 +404,10 @@ function ConditionCard({
       <WinRateBar winRate={metrics.winRate} tone={tone} />
       <div className="grid grid-cols-3 gap-2 text-center">
         <Metric label="Win %" value={`${metrics.winRate.toFixed(1)}%`} />
-        <Metric label="Avg Move" value={metrics.avgMove.toFixed(2)} />
+        <Metric label="Avg Move" value={`${metrics.avgMove.toFixed(2)}%`} />
         <Metric
           label="MFE (proxy) / MAE (proxy)"
-          value={`${metrics.avgMFE.toFixed(1)} / ${metrics.avgMAE.toFixed(1)}`}
+          value={`${metrics.avgMFE.toFixed(2)}% / ${metrics.avgMAE.toFixed(2)}%`}
         />
       </div>
     </div>

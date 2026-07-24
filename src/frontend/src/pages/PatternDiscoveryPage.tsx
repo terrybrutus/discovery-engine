@@ -28,7 +28,7 @@ import {
   Telescope,
   Trash2,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 function formatDuration(ms: number): string {
@@ -61,8 +61,14 @@ export default function PatternDiscoveryPage() {
   const isCrossReferencing = useEngineStore((s) => s.isCrossReferencing);
   const datasets = useEngineStore((s) => s.datasets);
   const activeDatasetId = useEngineStore((s) => s.activeDatasetId);
+  const selectedDatasetIds = useEngineStore((s) => s.selectedDatasetIds);
+  const toggleDatasetSelected = useEngineStore((s) => s.toggleDatasetSelected);
   const setActiveDataset = useEngineStore((s) => s.setActiveDataset);
   const featureValues = useEngineStore((s) => s.featureValues);
+  const featuresByDataset = useEngineStore((s) => s.featuresByDataset);
+  const featureValuesByDataset = useEngineStore(
+    (s) => s.featureValuesByDataset,
+  );
 
   // ---- Save / Load Run state ----
   const savedRuns = useEngineStore((s) => s.savedRuns);
@@ -86,38 +92,17 @@ export default function PatternDiscoveryPage() {
   const [loadingRunId, setLoadingRunId] = useState<number | null>(null);
   const [deletingRunId, setDeletingRunId] = useState<number | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [selectedDatasetIds, setSelectedDatasetIds] = useState<string[]>([]);
-  const knownDatasetIds = useRef(new Set<string>());
 
   const featuresAvailable = features.length > 0;
   const isRunning = discoveryProgress.isRunning || isComputing;
   const hasRun = completedSteps.has("discoveryComplete");
   const hasResults = patterns.length > 0;
 
-  // Include every newly loaded file by default. A user's explicit
-  // deselections remain untouched until that file is removed.
-  useEffect(() => {
-    setSelectedDatasetIds((previous) => {
-      const currentIds = datasets.map((dataset) => dataset.id);
-      const retained = previous.filter((id) => currentIds.includes(id));
-      return [
-        ...retained,
-        ...currentIds.filter((id) => !knownDatasetIds.current.has(id)),
-      ];
-    });
-    knownDatasetIds.current = new Set(datasets.map((dataset) => dataset.id));
-  }, [datasets]);
-
-  const toggleDatasetIncluded = (id: string): void => {
-    setSelectedDatasetIds((previous) =>
-      previous.includes(id)
-        ? previous.filter((candidate) => candidate !== id)
-        : [...previous, id],
-    );
-  };
-
   const handleDiscoveryRun = async (): Promise<void> => {
     await runDiscoveryAction();
+    if (!useEngineStore.getState().completedSteps.has("discoveryComplete")) {
+      return;
+    }
     const selectedDatasets = datasets.filter((dataset) =>
       selectedDatasetIds.includes(dataset.id),
     );
@@ -151,15 +136,9 @@ export default function PatternDiscoveryPage() {
 
   // ---- Cross-symbol coverage enrichment ----
   // After a discovery run, if 2+ datasets are loaded, re-evaluate each
-  // discovered pattern across all loaded datasets to update its coverage
-  // (isBroadlyValidated, pooledResult, equalSymbolResult). The store only
-  // retains features/featureValues for the active dataset (switching
-  // datasets clears downstream state), so we build the per-dataset maps
-  // from the active dataset's current features/featureValues. Datasets
-  // without a generated feature matrix contribute zero occurrences, which
-  // keeps isBroadlyValidated false until features exist for multiple
-  // datasets — the correct behavior. With a single dataset loaded, we skip
-  // enrichment entirely (coverage.isBroadlyValidated stays false).
+  // discovered pattern across every selected dataset using the retained
+  // per-dataset feature matrices. With one selected dataset, coverage remains
+  // dataset-specific.
   const enrichedPatterns = useMemo<Pattern[]>(() => {
     if (patterns.length === 0) return patterns;
     if (datasets.length < 2) return patterns;
@@ -168,8 +147,14 @@ export default function PatternDiscoveryPage() {
     }
     const featuresPerDataset = new Map<string, Feature[]>();
     const matrixPerDataset = new Map<string, FeatureMatrix>();
-    featuresPerDataset.set(activeDatasetId, features);
-    matrixPerDataset.set(activeDatasetId, featureValues);
+    for (const datasetId of selectedDatasetIds) {
+      const datasetFeatures = featuresByDataset[datasetId];
+      const datasetMatrix = featureValuesByDataset[datasetId];
+      if (datasetFeatures && datasetMatrix) {
+        featuresPerDataset.set(datasetId, datasetFeatures);
+        matrixPerDataset.set(datasetId, datasetMatrix);
+      }
+    }
     const minSampleSize =
       useEngineStore.getState().discoveryConfig.minSampleSize;
     const out: Pattern[] = [];
@@ -180,10 +165,11 @@ export default function PatternDiscoveryPage() {
       try {
         const coverage = computeCrossSymbolCoverage(
           p,
-          datasets,
+          datasets.filter((dataset) => selectedDatasetIds.includes(dataset.id)),
           featuresPerDataset,
           matrixPerDataset,
           minSampleSize,
+          activeDatasetId,
         );
         out.push(coverage ? { ...p, coverage } : p);
       } catch (err) {
@@ -196,7 +182,16 @@ export default function PatternDiscoveryPage() {
       }
     }
     return out;
-  }, [patterns, datasets, activeDatasetId, features, featureValues]);
+  }, [
+    patterns,
+    datasets,
+    activeDatasetId,
+    features,
+    featureValues,
+    featuresByDataset,
+    featureValuesByDataset,
+    selectedDatasetIds,
+  ]);
 
   // Toast when a run finishes with results.
   const justFinished = !isRunning && hasRun;
@@ -348,7 +343,7 @@ export default function PatternDiscoveryPage() {
             activeDatasetId={activeDatasetId}
             onSelect={setActiveDataset}
             selectedDatasetIds={selectedDatasetIds}
-            onToggleSelected={toggleDatasetIncluded}
+            onToggleSelected={toggleDatasetSelected}
           />
 
           {/* Progress indicator */}
@@ -440,8 +435,8 @@ export default function PatternDiscoveryPage() {
             <EmptyState
               icon={Search}
               title="Ready to discover patterns"
-              description="Set your filters on the left, then run discovery. The engine will test thousands of condition combinations across your features and rank the strongest repeating patterns by win rate, sample size, and confidence."
-              hint="With the sample dataset and default settings, a run typically finishes in a few seconds."
+              description="Set your filters on the left, then run discovery. The engine will test thousands of condition combinations, require lift over the matching baseline, and automatically validate the strongest candidates out of sample and across selected datasets."
+              hint="Runtime scales with the number of bars, features, and combinations selected."
               actionLabel="Run discovery"
               onAction={() => void handleDiscoveryRun()}
             />

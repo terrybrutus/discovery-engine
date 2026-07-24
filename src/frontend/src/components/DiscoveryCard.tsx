@@ -20,12 +20,12 @@ interface DiscoveryCardProps {
   conditions: string;
   direction: Direction;
   winRate: number; // 0–100
-  avgMove: number; // price units
+  avgMove: number; // percent return
   sampleSize: number;
   confidence: Confidence;
-  /** Average max adverse excursion (price units). */
+  /** Average max adverse excursion (percent). */
   avgMAE?: number;
-  /** Average max favorable excursion (price units). */
+  /** Average max favorable excursion (percent). */
   avgMFE?: number;
   /** True if the pattern degraded out-of-sample. */
   degraded?: boolean;
@@ -67,7 +67,7 @@ const PROXY_TOOLTIP =
 /**
  * Individual discovery presentation. Reads like the example output:
  * "Pattern #1: Monday, 2:55 PM, Price below VWAP, … → 76% probability of
- * downside, Average move 18.4 points, Sample size 1,147, Confidence High".
+ * downside, Average move 1.2%, Sample size 1,147, Confidence High".
  *
  * Scannable card layout with a direction arrow, headline probability,
  * average move, sample size, confidence rating, and MAE/MFE as secondary
@@ -170,9 +170,9 @@ export function DiscoveryCard({
         <span className="text-muted-foreground">probability of {dirText},</span>
         <span className="text-muted-foreground">Average move</span>
         <span className="font-mono font-semibold tabular-nums text-foreground">
-          {fmtNum(Math.abs(avgMove), 1)}
+          {fmtNum(Math.abs(avgMove), 1)}%
         </span>
-        <span className="text-muted-foreground">points,</span>
+        <span className="text-muted-foreground">move,</span>
         <span className="text-muted-foreground">Sample size</span>
         <span className="font-mono font-semibold tabular-nums text-foreground">
           {sampleSize.toLocaleString()}
@@ -200,7 +200,7 @@ export function DiscoveryCard({
             </Tooltip>
           </span>
           <span className="font-mono text-xs tabular-nums text-foreground">
-            {avgMFE != null ? fmtNum(avgMFE, 1) : "—"}
+            {avgMFE != null ? `${fmtNum(avgMFE, 2)}%` : "—"}
           </span>
         </div>
         <div className="flex flex-col gap-0.5 rounded-md border border-border bg-background/40 px-2.5 py-1.5">
@@ -222,7 +222,7 @@ export function DiscoveryCard({
             </Tooltip>
           </span>
           <span className="font-mono text-xs tabular-nums text-foreground">
-            {avgMAE != null ? fmtNum(avgMAE, 1) : "—"}
+            {avgMAE != null ? `${fmtNum(avgMAE, 2)}%` : "—"}
           </span>
         </div>
       </div>

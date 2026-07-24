@@ -19,6 +19,8 @@ import { useMemo, useState } from "react";
  */
 export default function FeatureGeneratorPage() {
   const dataset = useEngineStore((s) => s.dataset);
+  const datasets = useEngineStore((s) => s.datasets);
+  const selectedDatasetIds = useEngineStore((s) => s.selectedDatasetIds);
   const features = useEngineStore((s) => s.features);
   const featureValues = useEngineStore((s) => s.featureValues);
   const isComputing = useEngineStore((s) => s.isComputing);
@@ -28,6 +30,16 @@ export default function FeatureGeneratorPage() {
   );
 
   const featuresGenerated = completedSteps.has("featuresGenerated");
+  const includedDatasets =
+    selectedDatasetIds.length > 0
+      ? datasets.filter((candidate) =>
+          selectedDatasetIds.includes(candidate.id),
+        )
+      : datasets;
+  const includedBars = includedDatasets.reduce(
+    (sum, candidate) => sum + candidate.rowCount,
+    0,
+  );
 
   // Local enabled map — seeded from feature.enabled defaults, mutated by
   // toggles in the catalog. The store's `features` array is the source of
@@ -95,9 +107,11 @@ export default function FeatureGeneratorPage() {
           <p className="text-sm text-muted-foreground">
             Deriving hundreds of measurable characteristics from{" "}
             <span className="font-mono text-foreground tabular-nums">
-              {dataset.rowCount.toLocaleString()}
+              {includedBars.toLocaleString()}
             </span>{" "}
-            bars. This runs entirely in your browser.
+            bars across {includedDatasets.length} selected dataset
+            {includedDatasets.length === 1 ? "" : "s"}. This runs entirely in
+            your browser.
           </p>
           <div className="w-full max-w-sm">
             <Progress
@@ -130,12 +144,14 @@ export default function FeatureGeneratorPage() {
             <p className="text-sm leading-relaxed text-muted-foreground">
               The engine will derive hundreds of measurable features from your{" "}
               <span className="font-mono text-foreground tabular-nums">
-                {dataset.rowCount.toLocaleString()}
+                {includedBars.toLocaleString()}
               </span>{" "}
-              bars across 11 categories — candle structure, VWAP, time,
-              calendar, volume, volatility, location, gaps, opening range,
-              Bollinger bands, and trend. Each feature gets a plain-English
-              description so you know exactly what it measures.
+              bars in {includedDatasets.length} selected dataset
+              {includedDatasets.length === 1 ? "" : "s"}, across 11 categories —
+              candle structure, VWAP, time, calendar, volume, volatility,
+              location, gaps, opening range, Bollinger bands, and trend. Each
+              dataset receives its own aligned feature matrix for discovery and
+              validation.
             </p>
           </div>
           <Button

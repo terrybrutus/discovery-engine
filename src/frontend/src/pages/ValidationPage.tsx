@@ -31,6 +31,7 @@ export default function ValidationPage() {
   const validationResults = useEngineStore((s) => s.validationResults);
   const discoveryConfig = useEngineStore((s) => s.discoveryConfig);
   const datasets = useEngineStore((s) => s.datasets);
+  const selectedDatasetIds = useEngineStore((s) => s.selectedDatasetIds);
   const isComputing = useEngineStore((s) => s.isComputing);
   const completedSteps = useEngineStore((s) => s.completedSteps);
   const validateAction = useEngineStore((s) => s.validateAction);
@@ -88,9 +89,10 @@ export default function ValidationPage() {
             {hasResults ? "Re-run Validation" : "Validate Patterns"}
           </Button>
           <p className="text-sm text-muted-foreground">
-            Tests the top {Math.min(patterns.length, 20)} discovered patterns on
-            a 70/30 chronological split across {datasets.length} dataset
-            {datasets.length === 1 ? "" : "s"}.
+            Automatically tests the top {Math.min(patterns.length, 20)} patterns
+            on a 70/30 chronological split and checks survival across{" "}
+            {selectedDatasetIds.length || datasets.length} selected dataset
+            {(selectedDatasetIds.length || datasets.length) === 1 ? "" : "s"}.
           </p>
         </div>
       </div>

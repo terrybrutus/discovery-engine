@@ -27,7 +27,7 @@ function fmtPct(n: number): string {
 }
 
 function fmtPrice(n: number): string {
-  return n.toFixed(2);
+  return `${n.toFixed(2)}%`;
 }
 
 function directionText(dir: Pattern["direction"]): string {
@@ -81,6 +81,7 @@ export function generateReport(
   patterns: Pattern[],
   validationResults: ValidationResult[],
   crossReferenceResults: CrossReferenceResult[] = [],
+  includedDatasets: Dataset[] = [dataset],
 ): Report {
   const generatedAt = Date.now();
   const validationById = new Map(
@@ -145,13 +146,20 @@ export function generateReport(
   });
 
   // ---- Section: Dataset Overview ----
+  const datasetsForReport =
+    includedDatasets.length > 0 ? includedDatasets : [dataset];
+  const totalBars = datasetsForReport.reduce(
+    (sum, candidate) => sum + candidate.rowCount,
+    0,
+  );
+  const datasetNames = datasetsForReport
+    .map((candidate) => candidate.label ?? candidate.name)
+    .join(", ");
   const datasetSection = {
     id: "dataset",
     title: "Dataset Overview",
     paragraphs: [
-      `Analyzed dataset: "${dataset.name}" containing ${dataset.rowCount.toLocaleString()} bars on a ${dataset.timeframe} timeframe, spanning ${fmtDate(
-        dataset.dateRange.start,
-      )} to ${fmtDate(dataset.dateRange.end)}.`,
+      `Analyzed ${datasetsForReport.length} selected dataset${datasetsForReport.length === 1 ? "" : "s"} containing ${totalBars.toLocaleString()} total bars. Included: ${datasetNames}. The active discovery dataset was "${dataset.label ?? dataset.name}" (${dataset.timeframe}, ${fmtDate(dataset.dateRange.start)} to ${fmtDate(dataset.dateRange.end)}).`,
     ],
   };
 
@@ -190,12 +198,20 @@ export function generateReport(
     const degradedNote = v?.degraded
       ? ` However, this pattern ${v.degradationNote.toLowerCase()}`
       : " It held up out-of-sample.";
+    const liftNote =
+      p.liftVsBaseline != null
+        ? ` This is ${p.liftVsBaseline.toFixed(1)} percentage points above the ${
+            p.baselineWinRate != null
+              ? `${p.baselineWinRate.toFixed(1)}%`
+              : "unconditional"
+          } directional baseline.`
+        : "";
     discoveryParagraphs.push(
       `#${p.label.replace(/^When /, "")}: price moved ${directionText(
         p.direction,
       )} ${fmtPct(p.winRate)} of the time across ${p.sampleSize} occurrences, averaging ${fmtPrice(
         p.avgMove,
-      )} per move. Confidence is ${confidenceText(p.confidence)}.${degradedNote}`,
+      )} per move. Confidence is ${confidenceText(p.confidence)}.${liftNote}${degradedNote}`,
     );
   }
   if (discoveryParagraphs.length === 0) {
@@ -346,8 +362,8 @@ export function generateReport(
   // ---- Overall summary ----
   const summary =
     patterns.length === 0
-      ? `Analyzed ${dataset.rowCount.toLocaleString()} bars of "${dataset.name}" but found no patterns meeting the current thresholds. Adjust the discovery settings and run again.`
-      : `Analyzed ${dataset.rowCount.toLocaleString()} bars of "${dataset.name}" and ranked ${patterns.length} patterns. The strongest pattern moved ${directionText(
+      ? `Analyzed ${totalBars.toLocaleString()} bars across ${datasetsForReport.length} selected dataset${datasetsForReport.length === 1 ? "" : "s"} but found no patterns meeting the current thresholds. Adjust the discovery settings and run again.`
+      : `Analyzed ${totalBars.toLocaleString()} bars across ${datasetsForReport.length} selected dataset${datasetsForReport.length === 1 ? "" : "s"} and ranked ${patterns.length} patterns. The strongest pattern moved ${directionText(
           topPatterns[0].direction,
         )} ${fmtPct(topPatterns[0].winRate)} of the time across ${topPatterns[0].sampleSize} occurrences with ${confidenceText(
           topPatterns[0].confidence,

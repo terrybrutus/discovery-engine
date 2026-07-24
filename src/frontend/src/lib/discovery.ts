@@ -25,8 +25,8 @@ import type {
 // Combination generation is lazy and capped so millions of arrays are never
 // materialized in memory.
 //
-// MFE/MAE proxy: the engine measures raw up/down excursions per bar
-// (upExcursion = maxHigh − entry, downExcursion = entry − minLow). The
+// MFE/MAE proxy: the engine measures entry-normalized percentage excursions
+// per bar. The
 // favorable/adverse labeling is direction-adjusted in evaluatePattern based
 // on the pattern's dominant direction: bullish patterns keep
 // MFE = upExcursion, MAE = downExcursion; bearish patterns flip to
@@ -44,9 +44,13 @@ interface FeatureLookup {
   values: (number | string | undefined)[];
 }
 
-function confidenceRating(winRate: number, sampleSize: number): Confidence {
+function confidenceRating(
+  winRate: number,
+  sampleSize: number,
+  baseline = 50,
+): Confidence {
   // Margin-aware confidence: needs both a strong edge and enough samples.
-  const margin = winRate - 50; // for directional accuracy
+  const margin = winRate - baseline;
   if (sampleSize < 30) return "low";
   if (sampleSize < 100) {
     if (margin >= 15) return "moderate";
@@ -83,9 +87,9 @@ function scorePattern(
  * falls back to `horizon` so callers that don't care about a split window get
  * the original behavior.
  *
- * Returns raw excursions, not pre-assigned MFE/MAE:
- *   upExcursion   = maxHigh − entry  (how far price ran up)
- *   downExcursion = entry − minLow   (how far price ran down)
+ * Returns percentage excursions, not pre-assigned MFE/MAE:
+ *   upExcursion   = (maxHigh − entry) / entry * 100
+ *   downExcursion = (entry − minLow) / entry * 100
  * The favorable/adverse assignment is direction-adjusted later in
  * evaluatePattern based on the pattern's dominant direction, so the ratio
  * stays meaningful for bearish patterns. The proxy labeling is a UI concern;
@@ -116,9 +120,10 @@ function measureOutcome(
     if (bars[k].low < minLow) minLow = bars[k].low;
   }
   const exit = bars[exitIdx].close;
-  const ret = exit - entry;
-  const upExcursion = maxHigh - entry; // how far price ran up
-  const downExcursion = entry - minLow; // how far price ran down
+  const scale = Math.abs(entry) > 1e-9 ? Math.abs(entry) : 1;
+  const ret = ((exit - entry) / scale) * 100;
+  const upExcursion = ((maxHigh - entry) / scale) * 100;
+  const downExcursion = ((entry - minLow) / scale) * 100;
   // Direction is determined by the sign of the average move across matches;
   // here we just return the per-bar direction for aggregation.
   const direction: Direction =
@@ -271,12 +276,112 @@ function evaluatePattern(
   };
 }
 
+function baselineWinRates(
+  bars: OHLCVBar[],
+  horizon: number,
+): { bullish: number; bearish: number } {
+  let bullish = 0;
+  let bearish = 0;
+  const total = Math.max(0, bars.length - horizon);
+  if (total === 0) return { bullish: 0, bearish: 0 };
+  for (let index = 0; index < total; index++) {
+    const move = bars[index + horizon].close - bars[index].close;
+    if (move > 0) bullish++;
+    else if (move < 0) bearish++;
+  }
+  return {
+    bullish: (bullish / total) * 100,
+    bearish: (bearish / total) * 100,
+  };
+}
+
+function winRateForDirection(
+  bars: OHLCVBar[],
+  matches: number[],
+  horizon: number,
+  direction: Direction,
+): number {
+  if (matches.length === 0) return 0;
+  let wins = 0;
+  for (const index of matches) {
+    const exitIndex = index + horizon;
+    if (exitIndex >= bars.length) continue;
+    const move = bars[exitIndex].close - bars[index].close;
+    if (
+      (direction === "bullish" && move > 0) ||
+      (direction === "bearish" && move < 0)
+    ) {
+      wins++;
+    }
+  }
+  return (wins / matches.length) * 100;
+}
+
+function everyConditionAddsValue(
+  bars: OHLCVBar[],
+  conditions: Condition[],
+  result: EvalResult,
+  lookups: Map<string, FeatureLookup>,
+  horizon: number,
+  mfeMaeWindow: number,
+): boolean {
+  if (conditions.length < 2) return true;
+  const minimumIncrementalLift = 0.5;
+  for (let omitted = 0; omitted < conditions.length; omitted++) {
+    const parentConditions = conditions.filter((_, index) => index !== omitted);
+    const parent = evaluatePattern(
+      bars,
+      parentConditions,
+      lookups,
+      horizon,
+      mfeMaeWindow,
+    );
+    if (!parent) continue;
+    const parentWinRate = winRateForDirection(
+      bars,
+      parent.matches,
+      horizon,
+      result.metrics.direction,
+    );
+    if (result.metrics.winRate < parentWinRate + minimumIncrementalLift) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function matchSetSimilarity(left: number[], right: number[]): number {
+  let leftIndex = 0;
+  let rightIndex = 0;
+  let intersection = 0;
+  while (leftIndex < left.length && rightIndex < right.length) {
+    if (left[leftIndex] === right[rightIndex]) {
+      intersection++;
+      leftIndex++;
+      rightIndex++;
+    } else if (left[leftIndex] < right[rightIndex]) {
+      leftIndex++;
+    } else {
+      rightIndex++;
+    }
+  }
+  const union = left.length + right.length - intersection;
+  return union > 0 ? intersection / union : 1;
+}
+
 // ---------------------------------------------------------------------------
 // Plain-English translation.
 // Produces a natural sentence for each condition and a full pattern sentence.
 // Built-in features use template-driven phrasing keyed by feature id; custom
 // uploaded columns fall back to a raw "<column name> is above threshold" form.
 // ---------------------------------------------------------------------------
+
+function formatConditionValue(value: number): string {
+  if (!Number.isFinite(value)) return String(value);
+  const absolute = Math.abs(value);
+  const digits = absolute >= 100 ? 2 : absolute >= 1 ? 3 : 4;
+  return Number(value.toFixed(digits)).toString();
+}
 
 /** A natural-language fragment for a single condition, e.g. "RVOL is High". */
 function conditionPhrase(
@@ -295,21 +400,30 @@ function conditionPhrase(
   // reference the column name directly rather than a feature-code label.
   const v = cond.value ?? 0;
   const hv = cond.highValue ?? 0;
+  const formattedValue = formatConditionValue(v);
+  const formattedHighValue = formatConditionValue(hv);
   if (cond.operator === "eq" && (v === 0 || v === 1)) {
     return `${fname} is ${v === 1 ? "present" : "absent"}`;
   }
+  if (cond.operator === "neq" && v === 0) {
+    return `${fname} is present`;
+  }
   if (isCustom) {
     switch (cond.operator) {
+      case "eq":
+        return `${fname} is ${formattedValue}`;
+      case "neq":
+        return `${fname} is not ${formattedValue}`;
       case "gt":
-        return `${fname} is above ${v}`;
+        return `${fname} is above ${formattedValue}`;
       case "gte":
-        return `${fname} is at or above ${v}`;
+        return `${fname} is at or above ${formattedValue}`;
       case "lt":
-        return `${fname} is below ${v}`;
+        return `${fname} is below ${formattedValue}`;
       case "lte":
-        return `${fname} is at or below ${v}`;
+        return `${fname} is at or below ${formattedValue}`;
       case "between":
-        return `${fname} is between ${v} and ${hv}`;
+        return `${fname} is between ${formattedValue} and ${formattedHighValue}`;
       default:
         return `${fname} matches a threshold`;
     }
@@ -317,15 +431,15 @@ function conditionPhrase(
 
   switch (cond.operator) {
     case "gt":
-      return `${fname} is above ${v}`;
+      return `${fname} is above ${formattedValue}`;
     case "gte":
-      return `${fname} is at or above ${v}`;
+      return `${fname} is at or above ${formattedValue}`;
     case "lt":
-      return `${fname} is below ${v}`;
+      return `${fname} is below ${formattedValue}`;
     case "lte":
-      return `${fname} is at or below ${v}`;
+      return `${fname} is at or below ${formattedValue}`;
     case "between":
-      return `${fname} is between ${v} and ${hv}`;
+      return `${fname} is between ${formattedValue} and ${formattedHighValue}`;
     default:
       return fname;
   }
@@ -371,17 +485,26 @@ function conditionLabel(cond: Condition, feature: Feature | undefined): string {
   if (cond.operator === "eq" && (cond.value === 0 || cond.value === 1)) {
     return `${fname} is ${cond.value === 1 ? "present" : "absent"}`;
   }
+  if (cond.operator === "neq" && cond.value === 0) {
+    return `${fname} is present`;
+  }
+  const value = formatConditionValue(cond.value ?? 0);
+  const highValue = formatConditionValue(cond.highValue ?? 0);
   switch (cond.operator) {
+    case "eq":
+      return `${fname} = ${value}`;
+    case "neq":
+      return `${fname} ≠ ${value}`;
     case "gt":
-      return `${fname} > ${cond.value}`;
+      return `${fname} > ${value}`;
     case "gte":
-      return `${fname} ≥ ${cond.value}`;
+      return `${fname} ≥ ${value}`;
     case "lt":
-      return `${fname} < ${cond.value}`;
+      return `${fname} < ${value}`;
     case "lte":
-      return `${fname} ≤ ${cond.value}`;
+      return `${fname} ≤ ${value}`;
     case "between":
-      return `${fname} between ${cond.value} and ${cond.highValue}`;
+      return `${fname} between ${value} and ${highValue}`;
     default:
       return fname;
   }
@@ -425,6 +548,10 @@ function isNonStationaryRawLevel(feature: Feature): boolean {
     );
   const isAbsolutePrice =
     /\b(?:price|vwap|support|resistance|price level)\b/.test(name) ||
+    /^(?:upper|lower|basis|middle|midline|upper band|lower band|bb upper|bb lower)$/.test(
+      name,
+    ) ||
+    /\b(?:upper|lower|basis)\s+(?:band|level|price)\b/.test(name) ||
     /\b(?:session|daily|day|weekly|week|monthly|month)\s+(?:average\s+|avg\s+)?(?:open|high|low|close)\b/.test(
       name,
     ) ||
@@ -433,34 +560,39 @@ function isNonStationaryRawLevel(feature: Feature): boolean {
   return isCumulative || isAbsolutePrice;
 }
 
-function hasBinaryValues(values: (number | string | undefined)[]): boolean {
-  let sawZero = false;
-  let sawOne = false;
+export function isFeatureEligibleForDiscovery(feature: Feature): boolean {
+  return !isNonStationaryRawLevel(feature);
+}
+
+function categoricalNumericValues(
+  values: (number | string | undefined)[],
+): number[] | null {
+  const unique = new Set<number>();
   for (const value of values) {
     if (value == null) continue;
     const numeric = typeof value === "number" ? value : Number(value);
     if (!Number.isFinite(numeric)) continue;
-    if (numeric === 0) sawZero = true;
-    else if (numeric === 1) sawOne = true;
-    else return false;
+    unique.add(numeric);
+    if (unique.size > 3) return null;
   }
-  return sawZero && sawOne;
+  return unique.size >= 2
+    ? [...unique].sort((left, right) => left - right)
+    : null;
 }
 
 /**
  * Generate candidate conditions from enabled features.
  *
  * Per-feature manual overrides (FeatureOverrides) complement the default
- * auto-quartile bucketing. For each numeric feature:
+ * empirical-quantile bucketing. For each numeric feature:
  *   - If an override provides `thresholds`, those values replace the
- *     auto-quartile thresholds (each generates both `lt` and `gt`).
+ *     empirical thresholds (each generates both `lt` and `gt`).
  *   - Else if an override provides `ranges`, each `{low, high}` pair generates
- *     a `between` candidate (and the auto-quartile `lt`/`gt` candidates are
+ *     a `between` candidate (and the empirical `lt`/`gt` candidates are
  *     dropped for that feature).
- *   - Else if an override provides a `range` hint, that [min, max] is used
- *     for auto-quartile threshold generation instead of `feat.range`.
- *   - Else fall back to `feat.range` (auto-quartile) as before.
- * Features without an override keep the auto-quartile default.
+ *   - Else if an override provides a `range`, four evenly spaced thresholds
+ *     are generated inside those explicit manual bounds.
+ *   - Else thresholds come from observed 20/40/60/80 percentiles.
  */
 function generateCandidates(
   features: Feature[],
@@ -471,7 +603,7 @@ function generateCandidates(
   const candidates: Condition[] = [];
   for (const feat of features) {
     if (!feat.enabled) continue;
-    if (isNonStationaryRawLevel(feat)) continue;
+    if (!isFeatureEligibleForDiscovery(feat)) continue;
     if (feat.type === "categorical" && feat.buckets) {
       for (const b of feat.buckets) {
         candidates.push({ featureId: feat.id, operator: "eq", bucketLabel: b });
@@ -480,13 +612,20 @@ function generateCandidates(
       // Uploaded indicator/signal columns are commonly encoded as 0/1. Treat
       // them as categorical states instead of inventing thresholds such as
       // "Piercing Line < 0.6".
-      if (hasBinaryValues(matrix[feat.id] ?? [])) {
-        candidates.push({ featureId: feat.id, operator: "eq", value: 0 });
-        candidates.push({ featureId: feat.id, operator: "eq", value: 1 });
+      const stateValues = categoricalNumericValues(matrix[feat.id] ?? []);
+      if (stateValues) {
+        if (stateValues.length === 2 && stateValues.includes(0)) {
+          candidates.push({ featureId: feat.id, operator: "eq", value: 0 });
+          candidates.push({ featureId: feat.id, operator: "neq", value: 0 });
+        } else {
+          for (const value of stateValues) {
+            candidates.push({ featureId: feat.id, operator: "eq", value });
+          }
+        }
         continue;
       }
       const ov = overrides[feat.id];
-      // Explicit threshold overrides replace auto-quartile thresholds.
+      // Explicit threshold overrides replace empirical thresholds.
       if (ov?.thresholds && ov.thresholds.length > 0) {
         for (const t of ov.thresholds) {
           candidates.push({ featureId: feat.id, operator: "lt", value: t });
@@ -506,7 +645,7 @@ function generateCandidates(
         continue;
       }
       // Explicit range boundaries (without threshold overrides) generate
-      // `between` candidates and skip the auto-quartile lt/gt set.
+      // `between` candidates and skip the empirical lt/gt set.
       if (ov?.ranges && ov.ranges.length > 0) {
         for (const r of ov.ranges) {
           candidates.push({
@@ -518,10 +657,11 @@ function generateCandidates(
         }
         continue;
       }
-      // Auto-quartile bucketing. Use the override's range hint when present,
-      // else feat.range, else derive from data.
-      const rangeHint = ov?.range ?? feat.range;
-      if (rangeHint) {
+      // A manual range intentionally controls the candidate search bounds.
+      // Without one, use empirical quantiles from the actual dataset rather
+      // than evenly spacing thresholds across a theoretical min/max range.
+      if (ov?.range) {
+        const rangeHint = ov.range;
         const [lo, hi] = rangeHint;
         const span = hi - lo;
         // 4 quantile-style thresholds per numeric feature.
@@ -531,22 +671,17 @@ function generateCandidates(
           candidates.push({ featureId: feat.id, operator: "gt", value: t });
         }
       } else {
-        // No declared range — derive from data using a reduce-based min/max to
-        // avoid spreading a large array into Math.min/Math.max (RangeError on
-        // very large datasets).
         const vals = (matrix[feat.id] ?? []).filter(
           (v): v is number => typeof v === "number" && !Number.isNaN(v),
         );
         if (vals.length === 0) continue;
-        let min = Number.POSITIVE_INFINITY;
-        let max = Number.NEGATIVE_INFINITY;
-        for (const v of vals) {
-          if (v < min) min = v;
-          if (v > max) max = v;
-        }
-        const span = max - min || 1;
+        vals.sort((left, right) => left - right);
         for (let q = 1; q <= 4; q++) {
-          const t = min + (span * q) / 5;
+          const index = Math.min(
+            vals.length - 1,
+            Math.floor((vals.length * q) / 5),
+          );
+          const t = vals[index];
           candidates.push({ featureId: feat.id, operator: "lt", value: t });
           candidates.push({ featureId: feat.id, operator: "gt", value: t });
         }
@@ -721,8 +856,8 @@ function scorePatternSet(patterns: Pattern[], minSampleSize: number): number {
  * outcomes; otherwise the manual `config.horizon` is used.
  *
  * `featureOverrides` (optional) is plumbed to `generateCandidates` so manual
- * per-feature threshold/range overrides complement the auto-quartile
- * bucketing. Features without an override keep the auto-quartile default.
+ * per-feature threshold/range overrides complement empirical quantile
+ * bucketing. Features without an override keep the empirical default.
  */
 export async function runDiscovery(
   bars: OHLCVBar[],
@@ -987,6 +1122,8 @@ async function evaluateAllPatterns(
 ): Promise<Pattern[]> {
   const patterns: Pattern[] = [];
   const seenMatchSets = new Set<string>();
+  const keptMatchSets: number[][] = [];
+  const baselines = baselineWinRates(bars, horizon);
   let tested = 0;
 
   // Yield to the main thread every YIELD_EVERY combinations or every
@@ -1040,10 +1177,22 @@ async function evaluateAllPatterns(
       ci++;
 
       if (result && result.metrics.sampleSize >= config.minSampleSize) {
-        const margin = result.metrics.winRate - 50;
+        const baseline =
+          result.metrics.direction === "bearish"
+            ? baselines.bearish
+            : baselines.bullish;
+        const lift = result.metrics.winRate - baseline;
         if (
           result.metrics.winRate >= config.minWinRate &&
-          Math.abs(margin) >= 5
+          lift >= 3 &&
+          everyConditionAddsValue(
+            bars,
+            conds,
+            result,
+            lookups,
+            horizon,
+            mfeMaeWindow,
+          )
         ) {
           // MFE/MAE ratio filter. "off" skips entirely; "positive" applies
           // the (possibly auto-found) threshold to the direction-adjusted
@@ -1054,12 +1203,19 @@ async function evaluateAllPatterns(
             passesRatioFilter(result.mfeMaeRatio, ratioThreshold);
           if (ratioOk) {
             const matchSetKey = result.matches.join(",");
-            if (!seenMatchSets.has(matchSetKey)) {
+            const isNearDuplicate = keptMatchSets.some(
+              (matches) =>
+                Math.abs(matches.length - result.matches.length) /
+                  Math.max(matches.length, result.matches.length) <=
+                  0.1 && matchSetSimilarity(matches, result.matches) >= 0.95,
+            );
+            if (!seenMatchSets.has(matchSetKey) && !isNearDuplicate) {
               seenMatchSets.add(matchSetKey);
+              keptMatchSets.push(result.matches);
               const score = scorePattern(
                 result.metrics.winRate,
                 result.metrics.sampleSize,
-                Math.abs(margin),
+                lift,
               );
               const sentence = buildPlainEnglishSentence(
                 conds,
@@ -1082,6 +1238,8 @@ async function evaluateAllPatterns(
                 coverage,
                 direction: result.metrics.direction,
                 winRate: result.metrics.winRate,
+                baselineWinRate: baseline,
+                liftVsBaseline: lift,
                 avgMove: result.metrics.avgMove,
                 avgMAE: result.metrics.avgMAE,
                 avgMFE: result.metrics.avgMFE,
@@ -1095,6 +1253,7 @@ async function evaluateAllPatterns(
                 confidence: confidenceRating(
                   result.metrics.winRate,
                   result.metrics.sampleSize,
+                  baseline,
                 ),
                 score,
                 horizon,
@@ -1324,6 +1483,7 @@ export function computeCrossSymbolCoverage(
   featuresPerDataset: Map<string, Feature[]> = new Map(),
   matrixPerDataset: Map<string, FeatureMatrix> = new Map(),
   minSampleSize = 30,
+  primaryDatasetId?: string,
 ): PatternCoverage | null {
   if (datasets.length === 0) return null;
 
@@ -1345,6 +1505,27 @@ export function computeCrossSymbolCoverage(
   let latest = Number.NEGATIVE_INFINITY;
   let totalOccurrences = 0;
   let totalBarsExamined = 0;
+  const primaryTimeframe = datasets.find(
+    (dataset) => dataset.id === primaryDatasetId,
+  )?.timeframe;
+  const timeframeMs = (timeframe: Dataset["timeframe"]): number => {
+    switch (timeframe) {
+      case "1m":
+        return 60_000;
+      case "5m":
+        return 300_000;
+      case "15m":
+        return 900_000;
+      case "1h":
+        return 3_600_000;
+      case "1d":
+        return 86_400_000;
+      default:
+        return 60_000;
+    }
+  };
+  const holdDurationMs =
+    pattern.horizon * timeframeMs(primaryTimeframe ?? "unknown");
 
   for (const ds of datasets) {
     totalBarsExamined += ds.bars.length;
@@ -1369,12 +1550,16 @@ export function computeCrossSymbolCoverage(
     for (const f of feats) {
       if (mat[f.id]) lookups.set(f.id, { feature: f, values: mat[f.id] });
     }
+    const datasetHorizon = Math.max(
+      1,
+      Math.round(holdDurationMs / timeframeMs(ds.timeframe)),
+    );
     const result = evaluatePattern(
       ds.bars,
       pattern.conditions,
       lookups,
-      pattern.horizon,
-      pattern.horizon,
+      datasetHorizon,
+      datasetHorizon,
     );
     const symbol = ds.label ?? ds.name;
     const occ = result ? result.metrics.sampleSize : 0;
