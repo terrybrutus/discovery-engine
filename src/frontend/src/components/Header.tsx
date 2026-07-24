@@ -23,6 +23,10 @@ export function Header() {
   const [loadModalOpen, setLoadModalOpen] = useState(false);
 
   const total = datasets.length;
+  const totalRows = datasets.reduce(
+    (sum, loadedDataset) => sum + loadedDataset.rowCount,
+    0,
+  );
   const activeName = dataset?.label ?? dataset?.name ?? "";
   const pillLabel =
     total > 1
@@ -71,7 +75,8 @@ export function Header() {
               {pillLabel}
             </span>
             <span className="hidden text-xs text-muted-foreground tabular-nums md:inline">
-              · {dataset.rowCount.toLocaleString()} bars
+              · {dataset.rowCount.toLocaleString()} active /{" "}
+              {totalRows.toLocaleString()} total bars
             </span>
           </div>
         ) : null}
