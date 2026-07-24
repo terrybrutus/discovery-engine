@@ -1,6 +1,10 @@
 import { EmptyState } from "@/components/EmptyState";
 import { ResearchInterpreter } from "@/components/ResearchInterpreter";
 import { Button } from "@/components/ui/button";
+import {
+  patternSymbolEntries,
+  summarizeSymbolAttribution,
+} from "@/lib/symbolAttribution";
 import { cn } from "@/lib/utils";
 import { useEngineStore } from "@/store/engineStore";
 import type { Pattern, TabId, ValidationResult } from "@/types";
@@ -126,6 +130,10 @@ export default function ReportPage() {
     survivalValues.length > 0
       ? survivalValues.reduce((acc, v) => acc + v, 0) / survivalValues.length
       : null;
+  const symbolAttribution = summarizeSymbolAttribution(
+    patterns,
+    validationResults,
+  );
 
   // ---- Dataset name(s) for the summary block ----
   // Prefer the list of all loaded datasets; fall back to the active dataset.
@@ -140,7 +148,10 @@ export default function ReportPage() {
   // rendered as dedicated tables below to avoid duplicating the same patterns
   // as both narrative and table.
   const proseSections = activeReport.sections.filter(
-    (s) => s.id !== "top-discoveries" && s.id !== "top-by-ratio",
+    (s) =>
+      s.id !== "top-discoveries" &&
+      s.id !== "top-by-ratio" &&
+      s.id !== "symbol-attribution",
   );
 
   const handleRegenerate = () => generateReportAction();
@@ -319,6 +330,26 @@ export default function ReportPage() {
         </div>
       </section>
 
+      {/* ---- Per-symbol occurrence attribution ---- */}
+      <section
+        data-ocid="report.symbol_attribution"
+        aria-labelledby="symbol-attribution-title"
+        className="flex flex-col gap-3"
+      >
+        <SectionHeader
+          index="04"
+          title="Symbol Attribution"
+          id="symbol-attribution-title"
+        />
+        <p className="text-sm leading-relaxed text-muted-foreground">
+          Shows which outcome symbol supplied the matches behind the reported
+          patterns. Shares use all reported pattern occurrences as the
+          denominator; when multiple patterns match the same bar, each pattern
+          occurrence remains counted.
+        </p>
+        <SymbolAttributionTable rows={symbolAttribution} />
+      </section>
+
       {/* ---- Narrative sections ---- */}
       {proseSections.map((section, idx) => (
         <section
@@ -328,7 +359,7 @@ export default function ReportPage() {
           className="rounded-lg border border-border bg-card p-5"
         >
           <SectionHeader
-            index={String(idx + 4).padStart(2, "0")}
+            index={String(idx + 5).padStart(2, "0")}
             title={section.title}
             id={`section-${section.id}-title`}
           />
@@ -475,6 +506,7 @@ function PatternTable({
             <Th className="w-28 text-right">MFE/MAE Ratio</Th>
             <Th className="w-24 text-right">Avg Move</Th>
             <Th className="w-20 text-right">Sample</Th>
+            <Th className="min-w-44">Symbol Occurrences</Th>
             <Th className="w-24">Confidence</Th>
             <Th className="w-20">Status</Th>
           </tr>
@@ -513,6 +545,9 @@ function PatternTable({
                 <Td className="text-right font-mono tabular-nums text-muted-foreground">
                   {p.sampleSize.toLocaleString()}
                 </Td>
+                <Td>
+                  <PatternSymbolDistribution pattern={p} />
+                </Td>
                 <Td className="font-mono text-xs capitalize text-muted-foreground">
                   {p.confidence}
                 </Td>
@@ -530,6 +565,96 @@ function PatternTable({
               </tr>
             );
           })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function PatternSymbolDistribution({ pattern }: { pattern: Pattern }) {
+  const entries = patternSymbolEntries(pattern);
+  return (
+    <div className="flex min-w-40 flex-col gap-0.5">
+      {entries.map((entry) => (
+        <div
+          key={entry.symbol}
+          className="flex items-baseline justify-between gap-2 font-mono text-[11px]"
+        >
+          <span
+            className="max-w-28 truncate text-foreground"
+            title={entry.symbol}
+          >
+            {entry.symbol}
+          </span>
+          <span className="whitespace-nowrap tabular-nums text-muted-foreground">
+            {entry.occurrences.toLocaleString()} ·{" "}
+            {entry.shareOfPattern.toFixed(1)}%
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SymbolAttributionTable({
+  rows,
+}: {
+  rows: ReturnType<typeof summarizeSymbolAttribution>;
+}) {
+  if (rows.length === 0) {
+    return (
+      <div className="rounded-lg border border-dashed border-border bg-card/40 px-5 py-8 text-center text-sm text-muted-foreground">
+        No per-symbol occurrence attribution was available.
+      </div>
+    );
+  }
+  return (
+    <div className="overflow-x-auto rounded-lg border border-border bg-card">
+      <table className="w-full border-collapse text-sm">
+        <thead>
+          <tr className="border-b border-border bg-muted/40 text-left">
+            <Th>Symbol</Th>
+            <Th className="text-right">Patterns</Th>
+            <Th className="text-right">Occurrences</Th>
+            <Th className="text-right">Share</Th>
+            <Th className="text-right">Weighted Win Rate</Th>
+            <Th className="text-right">Avg Move</Th>
+            <Th className="text-right">Passed / Degraded</Th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr
+              key={row.symbol}
+              className="border-b border-border/60 last:border-0"
+            >
+              <Td>
+                <span className="font-mono text-xs text-foreground">
+                  {row.symbol}
+                </span>
+              </Td>
+              <Td className="text-right font-mono tabular-nums">
+                {row.patternCount.toLocaleString()}
+              </Td>
+              <Td className="text-right font-mono tabular-nums">
+                {row.occurrences.toLocaleString()}
+              </Td>
+              <Td className="text-right font-mono tabular-nums">
+                {row.shareOfReportedOccurrences.toFixed(1)}%
+              </Td>
+              <Td className="text-right font-mono tabular-nums">
+                {row.occurrenceWeightedWinRate.toFixed(1)}%
+              </Td>
+              <Td className="text-right font-mono tabular-nums">
+                {row.occurrenceWeightedAvgMove.toFixed(2)}%
+              </Td>
+              <Td className="text-right font-mono tabular-nums">
+                <span className="text-success">{row.passedPatterns}</span>
+                {" / "}
+                <span className="text-destructive">{row.degradedPatterns}</span>
+              </Td>
+            </tr>
+          ))}
         </tbody>
       </table>
     </div>

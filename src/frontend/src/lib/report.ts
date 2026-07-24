@@ -1,3 +1,4 @@
+import { summarizeSymbolAttribution } from "@/lib/symbolAttribution";
 import type {
   CrossReferenceResult,
   Dataset,
@@ -155,11 +156,19 @@ export function generateReport(
   const datasetNames = datasetsForReport
     .map((candidate) => candidate.label ?? candidate.name)
     .join(", ");
+  const outcomeTargetIds = new Set(
+    patterns
+      .map((pattern) => pattern.targetDatasetId)
+      .filter((id): id is string => Boolean(id)),
+  );
+  const usesMultipleOutcomeTargets = outcomeTargetIds.size > 1;
   const datasetSection = {
     id: "dataset",
     title: "Dataset Overview",
     paragraphs: [
-      `Used ${datasetsForReport.length} selected dataset${datasetsForReport.length === 1 ? "" : "s"} containing ${totalBars.toLocaleString()} source bars. Included: ${datasetNames}. "${dataset.label ?? dataset.name}" (${dataset.timeframe}, ${fmtDate(dataset.dateRange.start)} to ${fmtDate(dataset.dateRange.end)}) supplied the prediction outcomes; every other selected dataset supplied its latest causally completed state at each target decision time.`,
+      usesMultipleOutcomeTargets
+        ? `Used ${datasetsForReport.length} selected datasets containing ${totalBars.toLocaleString()} source bars. Included: ${datasetNames}. Every selected dataset supplied prediction outcomes in its own bounded target pass; the other selected timelines supplied their latest causally completed context at each decision time.`
+        : `Used ${datasetsForReport.length} selected dataset${datasetsForReport.length === 1 ? "" : "s"} containing ${totalBars.toLocaleString()} source bars. Included: ${datasetNames}. "${dataset.label ?? dataset.name}" (${dataset.timeframe}, ${fmtDate(dataset.dateRange.start)} to ${fmtDate(dataset.dateRange.end)}) supplied the prediction outcomes; every other selected dataset supplied its latest causally completed state at each target decision time.`,
     ],
   };
 
@@ -309,6 +318,34 @@ export function generateReport(
     paragraphs: validationParagraphs,
   };
 
+  // ---- Section: Symbol Attribution ----
+  const symbolRows = summarizeSymbolAttribution(patterns, validationResults);
+  const symbolParagraphs =
+    symbolRows.length > 0
+      ? [
+          "Reported pattern occurrences are attributed to the symbol whose future bars supplied the outcome. Percentages are shares of all reported pattern occurrences; overlapping patterns can count the same market bar more than once.",
+          ...symbolRows.map(
+            (row) =>
+              `${row.symbol}: ${row.occurrences.toLocaleString()} occurrences (${fmtPct(
+                row.shareOfReportedOccurrences,
+              )}) across ${row.patternCount} reported pattern${
+                row.patternCount === 1 ? "" : "s"
+              }; occurrence-weighted win rate ${fmtPct(
+                row.occurrenceWeightedWinRate,
+              )}, average move ${fmtPrice(
+                row.occurrenceWeightedAvgMove,
+              )}, ${row.passedPatterns} passed and ${
+                row.degradedPatterns
+              } degraded.`,
+          ),
+        ]
+      : ["No per-symbol occurrence attribution was available."];
+  const symbolAttributionSection = {
+    id: "symbol-attribution",
+    title: "Symbol Attribution",
+    paragraphs: symbolParagraphs,
+  };
+
   // ---- Section: Methodology ----
   const methodologySection = {
     id: "methodology",
@@ -330,6 +367,7 @@ export function generateReport(
     topDiscoveriesSection,
     ratioSection,
     validationSection,
+    symbolAttributionSection,
   ];
   if (crossReferenceResults.length > 0) {
     const xrefParagraphs: string[] = [
@@ -373,7 +411,9 @@ export function generateReport(
   return {
     generatedAt,
     summary,
-    datasetName: dataset.name,
+    datasetName: usesMultipleOutcomeTargets
+      ? `${datasetsForReport.length}-dataset research universe`
+      : dataset.name,
     sections,
     topDiscoveries,
   };
