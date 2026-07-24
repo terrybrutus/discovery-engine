@@ -1,4 +1,5 @@
 import { DataPreview } from "@/components/DataPreview";
+import { DefinitionManager } from "@/components/DefinitionManager";
 import { EmptyState } from "@/components/EmptyState";
 import { FeatureCatalog } from "@/components/FeatureCatalog";
 import { FeatureStats } from "@/components/FeatureStats";
@@ -193,6 +194,9 @@ export default function FeatureGeneratorPage() {
             </p>
           ) : null}
         </div>
+        <div className="mx-auto max-w-5xl">
+          <DefinitionManager />
+        </div>
       </div>
     );
   }
@@ -325,6 +329,8 @@ export default function FeatureGeneratorPage() {
       </div>
 
       {/* Catalog section */}
+      <DefinitionManager />
+
       <section
         data-ocid="page.feature_generator.catalog_section"
         className="flex flex-col gap-2"

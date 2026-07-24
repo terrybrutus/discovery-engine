@@ -81,7 +81,7 @@ export function ValidationBreakdown({
       </div>
 
       {/* Robustness metrics for this pattern */}
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <RobustnessStat
           label="Direction-Adjusted MFE/MAE"
           value={formatRatio(result.directionAdjustedMfeMaeRatio)}
@@ -93,6 +93,26 @@ export function ValidationBreakdown({
           value={formatSurvival(result.crossSymbolSurvival)}
           hint="Fraction of symbols/datasets the pattern remains profitable on (0–1)."
           dataOcid="validation_breakdown.cross_symbol_survival"
+        />
+        <RobustnessStat
+          label="Cross-Timeframe Survival"
+          value={formatSurvival(result.crossTimeframeSurvival ?? null)}
+          hint="Fraction of independently evaluated timeframes on which the pattern remained profitable."
+          dataOcid="validation_breakdown.cross_timeframe_survival"
+        />
+        <RobustnessStat
+          label="Walk-Forward Folds"
+          value={
+            result.walkForward
+              ? `${result.walkForward.passedFolds}/${result.walkForward.folds}`
+              : "—"
+          }
+          hint={
+            result.walkForward
+              ? `Mean ${result.walkForward.meanWinRate.toFixed(1)}%; worst fold ${result.walkForward.worstWinRate.toFixed(1)}%.`
+              : "No walk-forward audit available."
+          }
+          dataOcid="validation_breakdown.walk_forward"
         />
       </div>
 

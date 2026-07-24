@@ -145,7 +145,9 @@ export function AppShell() {
           >
             caffeine.ai
           </a>
-          {" · "}All computation runs in your browser — nothing is uploaded.
+          {" · "}Research rows and statistical computation remain in your
+          browser; optional AI definition requests send only schema summaries
+          you approve.
         </p>
       </footer>
     </div>

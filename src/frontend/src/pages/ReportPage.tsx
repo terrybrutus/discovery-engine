@@ -1,4 +1,5 @@
 import { EmptyState } from "@/components/EmptyState";
+import { ResearchInterpreter } from "@/components/ResearchInterpreter";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useEngineStore } from "@/store/engineStore";
@@ -218,6 +219,11 @@ export default function ReportPage() {
           />
         </div>
       </section>
+
+      <ResearchInterpreter
+        patterns={patterns}
+        validationResults={validationResults}
+      />
 
       {/* ---- Top patterns by win rate ---- */}
       <section

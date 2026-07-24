@@ -2,17 +2,14 @@
 // All computation is client-side; these types are the shared contract
 // between the engine libs, the zustand store, and the UI.
 
+/** Human-readable interval derived from timestamps. Arbitrary values such as
+ * 2m, 45m, 2h, and 3d are valid; the hierarchy is ordered by intervalMs. */
 export type Timeframe =
-  | "1m"
-  | "3m"
-  | "5m"
-  | "15m"
-  | "30m"
-  | "1h"
-  | "4h"
-  | "1d"
-  | "1w"
-  | "unknown";
+  | "unknown"
+  | `${number}m`
+  | `${number}h`
+  | `${number}d`
+  | `${number}w`;
 
 export interface OHLCVBar {
   timestamp: number; // unix ms
@@ -37,6 +34,69 @@ export type ColumnSemantic =
   | "percentage"
   | "generic";
 
+export type IndicatorRole =
+  | "price"
+  | "price-level"
+  | "upper-band"
+  | "lower-band"
+  | "basis"
+  | "oscillator"
+  | "volume"
+  | "volatility"
+  | "cumulative"
+  | "percentage"
+  | "binary-event"
+  | "generic-series";
+
+export type RelationshipPrimitive =
+  | "normalized-value"
+  | "percentile"
+  | "zscore"
+  | "direction"
+  | "slope"
+  | "acceleration"
+  | "persistence"
+  | "cross"
+  | "touch"
+  | "rejection"
+  | "breakout"
+  | "failed-breakout"
+  | "compression"
+  | "expansion"
+  | "regime-transition"
+  | "divergence"
+  | "convergence"
+  | "sequence";
+
+export interface IndicatorDefinition {
+  /** Stable, versioned identity reused across uploads. */
+  id: string;
+  version: number;
+  canonicalName: string;
+  description: string;
+  role: IndicatorRole;
+  semantic: ColumnSemantic;
+  units:
+    | "price"
+    | "percent"
+    | "ratio"
+    | "bounded"
+    | "count"
+    | "event"
+    | "unknown";
+  expectedRange?: [number, number];
+  parameters?: Record<string, string | number | boolean>;
+  stationary: boolean;
+  directionalMeaning?: string;
+  supportedRelationships: RelationshipPrimitive[];
+  aliases: string[];
+  source: "builtin" | "inferred" | "ai" | "user";
+  confidence: number;
+  sourceHash?: string;
+  reviewed?: boolean;
+  updatedAt: number;
+}
+
 /**
  * A detected column in an uploaded dataset.
  * - `key` is the normalized internal key (lowercase, spaces/special chars → `_`).
@@ -49,6 +109,8 @@ export interface ColumnDef {
   type: ColumnType;
   /** Inferred meaning used to transform imported values into stationary features. */
   semantic?: ColumnSemantic;
+  /** Definition registry entry controlling interpretation of this field. */
+  definitionId?: string;
 }
 
 export interface Dataset {
@@ -141,6 +203,10 @@ export interface Feature {
   /** Dataset/timeframe supplying an aligned context feature. */
   originDatasetId?: string;
   originTimeframe?: Timeframe;
+  /** Definition and primitive that produced this feature. */
+  definitionId?: string;
+  role?: IndicatorRole;
+  primitive?: RelationshipPrimitive;
 }
 
 /** A single computed value for one bar / one feature. */
@@ -211,6 +277,31 @@ export interface Pattern {
   plainEnglishSentence?: string;
   /** Coverage analysis across the examined history. */
   coverage?: PatternCoverage;
+  /** Rich path-dependent outcome measurements, separate from the event. */
+  outcomeProfile?: OutcomeProfile;
+  /** Family-wise false-discovery estimate from all combinations tested. */
+  falseDiscoveryRate?: number;
+}
+
+export interface OutcomeProfile {
+  medianMove: number;
+  medianMFE: number;
+  medianMAE: number;
+  /** Probability of touching each configured favorable target before horizon. */
+  targetHitRates: {
+    targetPct: number;
+    hitRate: number;
+    medianBars: number | null;
+  }[];
+  /** Probability of touching each configured adverse stop before horizon. */
+  stopHitRates: { stopPct: number; hitRate: number }[];
+  /** Target-before-stop probabilities for matching target/stop pairs. */
+  targetBeforeStop: {
+    targetPct: number;
+    stopPct: number;
+    probability: number;
+  }[];
+  failureRate: number;
 }
 
 /**
@@ -256,6 +347,8 @@ export interface PatternMetrics {
   avgMFE: number;
   sampleSize: number;
   direction: Direction;
+  /** Wilson 95% interval for the direction-adjusted win rate. */
+  winRateInterval?: [number, number];
 }
 
 export interface ConditionBreakdown {
@@ -294,6 +387,15 @@ export interface ValidationResult {
    * dataset was used. `null` when no datasets were available to evaluate.
    */
   crossSymbolSurvival: number | null;
+  /** Expanding-window chronological folds rather than one lucky split. */
+  walkForward?: {
+    folds: number;
+    passedFolds: number;
+    meanWinRate: number;
+    worstWinRate: number;
+  };
+  /** Performance when the pattern is evaluated away from its source timeframe. */
+  crossTimeframeSurvival?: number | null;
 }
 
 export interface DiscoveryConfig {
@@ -334,6 +436,11 @@ export interface DiscoveryConfig {
    * `horizon` value.
    */
   holdWindowAutoFind?: boolean;
+  /** Favorable and adverse percentage thresholds for path-dependent outcomes. */
+  outcomeTargetsPct?: number[];
+  outcomeStopsPct?: number[];
+  /** Number of expanding chronological folds used by validation. */
+  walkForwardFolds?: number;
 }
 
 export interface DiscoveryProgress {

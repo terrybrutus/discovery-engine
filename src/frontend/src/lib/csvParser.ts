@@ -108,32 +108,30 @@ function inferIntervalMs(bars: OHLCVBar[]): number {
 
 function inferTimeframe(intervalMs: number): Timeframe {
   const minute = 60_000;
-  const choices: Array<[number, Timeframe]> = [
-    [minute, "1m"],
-    [3 * minute, "3m"],
-    [5 * minute, "5m"],
-    [15 * minute, "15m"],
-    [30 * minute, "30m"],
-    [60 * minute, "1h"],
-    [4 * 60 * minute, "4h"],
-    [24 * 60 * minute, "1d"],
-    [7 * 24 * 60 * minute, "1w"],
-  ];
-  const nearest = choices.reduce((best, candidate) =>
-    Math.abs(candidate[0] - intervalMs) < Math.abs(best[0] - intervalMs)
-      ? candidate
-      : best,
-  );
-  return Math.abs(nearest[0] - intervalMs) / nearest[0] <= 0.15
-    ? nearest[1]
-    : "unknown";
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) return "unknown";
+  const roundedMinutes = Math.round(intervalMs / minute);
+  // Accept arbitrary whole-minute chart intervals rather than maintaining a
+  // hard-coded vocabulary. This gives 45m its correct place automatically.
+  if (Math.abs(intervalMs - roundedMinutes * minute) / intervalMs <= 0.08) {
+    if (roundedMinutes % (7 * 24 * 60) === 0) {
+      return `${roundedMinutes / (7 * 24 * 60)}w`;
+    }
+    if (roundedMinutes % (24 * 60) === 0) {
+      return `${roundedMinutes / (24 * 60)}d`;
+    }
+    if (roundedMinutes % 60 === 0) {
+      return `${roundedMinutes / 60}h`;
+    }
+    return `${roundedMinutes}m`;
+  }
+  return "unknown";
 }
 
 function inferInstrumentKey(name: string): string {
   const withoutExtension = name.replace(/\.(csv|txt|md)$/i, "");
   const withoutTimeframe = withoutExtension
     .replace(
-      /(?:^|[\s_.-])(?:1m|3m|5m|15m|30m|1h|4h|1d|1w|60|240|daily|weekly)(?=$|[\s_.-])/gi,
+      /(?:^|[\s_.-])(?:(?:\d+)(?:m|h|d|w)|60|240|daily|weekly)(?=$|[\s_.-])/gi,
       " ",
     )
     .replace(/\(\d+\)$/g, " ");

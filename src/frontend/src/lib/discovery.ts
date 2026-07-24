@@ -9,6 +9,7 @@ import type {
   Feature,
   FeatureMatrix,
   OHLCVBar,
+  OutcomeProfile,
   Pattern,
   PatternCoverage,
   PatternMetrics,
@@ -201,6 +202,152 @@ interface EvalResult {
   metrics: PatternMetrics;
   matches: number[];
   mfeMaeRatio: number;
+}
+
+function median(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? (sorted[middle - 1] + sorted[middle]) / 2
+    : sorted[middle];
+}
+
+function buildOutcomeProfile(
+  bars: OHLCVBar[],
+  matches: number[],
+  direction: Direction,
+  horizon: number,
+  targets: number[],
+  stops: number[],
+): OutcomeProfile {
+  const moves: number[] = [];
+  const mfes: number[] = [];
+  const maes: number[] = [];
+  const targetHits = targets.map(() => 0);
+  const targetBars = targets.map(() => [] as number[]);
+  const stopHits = stops.map(() => 0);
+  const targetBeforeStop = targets.flatMap((targetPct) =>
+    stops.map((stopPct) => ({ targetPct, stopPct, hits: 0 })),
+  );
+
+  for (const entryIndex of matches) {
+    const end = Math.min(entryIndex + horizon, bars.length - 1);
+    if (end <= entryIndex) continue;
+    const entry = bars[entryIndex].close;
+    const scale = Math.max(Math.abs(entry), 1e-9);
+    let favorable = 0;
+    let adverse = 0;
+    const firstTarget = new Array<number | null>(targets.length).fill(null);
+    const firstStop = new Array<number | null>(stops.length).fill(null);
+    for (let index = entryIndex + 1; index <= end; index++) {
+      const up = ((bars[index].high - entry) / scale) * 100;
+      const down = ((entry - bars[index].low) / scale) * 100;
+      const favorableAtBar = direction === "bearish" ? down : up;
+      const adverseAtBar = direction === "bearish" ? up : down;
+      favorable = Math.max(favorable, favorableAtBar);
+      adverse = Math.max(adverse, adverseAtBar);
+      for (let ti = 0; ti < targets.length; ti++) {
+        if (firstTarget[ti] == null && favorableAtBar >= targets[ti]) {
+          firstTarget[ti] = index - entryIndex;
+        }
+      }
+      for (let si = 0; si < stops.length; si++) {
+        if (firstStop[si] == null && adverseAtBar >= stops[si]) {
+          firstStop[si] = index - entryIndex;
+        }
+      }
+    }
+    const rawMove = ((bars[end].close - entry) / scale) * 100;
+    moves.push(direction === "bearish" ? -rawMove : rawMove);
+    mfes.push(favorable);
+    maes.push(adverse);
+    firstTarget.forEach((bar, index) => {
+      if (bar != null) {
+        targetHits[index]++;
+        targetBars[index].push(bar);
+      }
+    });
+    firstStop.forEach((bar, index) => {
+      if (bar != null) stopHits[index]++;
+    });
+    for (let ti = 0; ti < targets.length; ti++) {
+      for (let si = 0; si < stops.length; si++) {
+        const candidate = targetBeforeStop[ti * stops.length + si];
+        const targetBar = firstTarget[ti];
+        const stopBar = firstStop[si];
+        if (targetBar != null && (stopBar == null || targetBar < stopBar)) {
+          candidate.hits++;
+        }
+      }
+    }
+  }
+  const count = Math.max(1, moves.length);
+  return {
+    medianMove: median(moves),
+    medianMFE: median(mfes),
+    medianMAE: median(maes),
+    targetHitRates: targets.map((targetPct, index) => ({
+      targetPct,
+      hitRate: (targetHits[index] / count) * 100,
+      medianBars: targetBars[index].length ? median(targetBars[index]) : null,
+    })),
+    stopHitRates: stops.map((stopPct, index) => ({
+      stopPct,
+      hitRate: (stopHits[index] / count) * 100,
+    })),
+    targetBeforeStop: targetBeforeStop.map((candidate) => ({
+      targetPct: candidate.targetPct,
+      stopPct: candidate.stopPct,
+      probability: (candidate.hits / count) * 100,
+    })),
+    failureRate: (moves.filter((move) => move <= 0).length / count) * 100,
+  };
+}
+
+function approximateTwoSidedPValue(
+  winRate: number,
+  sampleSize: number,
+  baselineWinRate: number,
+): number {
+  if (sampleSize <= 0) return 1;
+  const p = Math.min(0.999999, Math.max(0.000001, baselineWinRate / 100));
+  const observed = winRate / 100;
+  const z = Math.abs(observed - p) / Math.sqrt((p * (1 - p)) / sampleSize);
+  // Abramowitz-Stegun normal-tail approximation.
+  const t = 1 / (1 + 0.2316419 * z);
+  const density = 0.3989423 * Math.exp((-z * z) / 2);
+  const tail =
+    density *
+    t *
+    (0.3193815 +
+      t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
+  return Math.min(1, Math.max(0, 2 * tail));
+}
+
+function applyFalseDiscoveryCorrection(
+  patterns: Pattern[],
+  tests: number,
+): void {
+  const ranked = patterns
+    .map((pattern) => ({
+      pattern,
+      p: approximateTwoSidedPValue(
+        pattern.winRate,
+        pattern.sampleSize,
+        pattern.baselineWinRate ?? 50,
+      ),
+    }))
+    .sort((a, b) => a.p - b.p);
+  let previous = 1;
+  for (let index = ranked.length - 1; index >= 0; index--) {
+    const q = Math.min(
+      previous,
+      (ranked[index].p * Math.max(1, tests)) / (index + 1),
+    );
+    ranked[index].pattern.falseDiscoveryRate = q;
+    previous = q;
+  }
 }
 
 function evaluatePattern(
@@ -569,7 +716,9 @@ function categoricalNumericValues(
   values: (number | string | undefined)[],
 ): number[] | null {
   const unique = new Set<number>();
-  for (const value of values) {
+  const stride = Math.max(1, Math.floor(values.length / 4096));
+  for (let index = 0; index < values.length; index += stride) {
+    const value = values[index];
     if (value == null) continue;
     const numeric = typeof value === "number" ? value : Number(value);
     if (!Number.isFinite(numeric)) continue;
@@ -672,9 +821,15 @@ function generateCandidates(
           candidates.push({ featureId: feat.id, operator: "gt", value: t });
         }
       } else {
-        const vals = (matrix[feat.id] ?? []).filter(
-          (v): v is number => typeof v === "number" && !Number.isNaN(v),
-        );
+        const sourceValues = matrix[feat.id] ?? [];
+        const stride = Math.max(1, Math.floor(sourceValues.length / 5000));
+        const vals: number[] = [];
+        for (let index = 0; index < sourceValues.length; index += stride) {
+          const value = sourceValues[index];
+          if (typeof value === "number" && Number.isFinite(value)) {
+            vals.push(value);
+          }
+        }
         if (vals.length === 0) continue;
         vals.sort((left, right) => left - right);
         for (let q = 1; q <= 4; q++) {
@@ -1344,6 +1499,14 @@ async function evaluateAllPatterns(
                 ),
                 score,
                 horizon,
+                outcomeProfile: buildOutcomeProfile(
+                  bars,
+                  result.matches,
+                  result.metrics.direction,
+                  horizon,
+                  config.outcomeTargetsPct ?? [0.1, 0.25, 0.5, 1],
+                  config.outcomeStopsPct ?? [0.1, 0.25, 0.5, 1],
+                ),
               });
             }
           }
@@ -1378,6 +1541,7 @@ async function evaluateAllPatterns(
     }
   }
 
+  applyFalseDiscoveryCorrection(patterns, tested);
   return patterns;
 }
 

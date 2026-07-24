@@ -314,10 +314,11 @@ export function generateReport(
     id: "methodology",
     title: "Methodology",
     paragraphs: [
-      "Each pattern is a combination of 2-6 conditions on the generated features. For every combination, the engine finds all bars matching every condition, then measures the forward return over a fixed horizon. Win rate is the share of matches that moved in the pattern's dominant direction.",
-      "Confidence combines sample size and the margin of win rate over 50%. Patterns are ranked by a composite score that rewards both a large sample and a strong edge.",
-      "Validation splits the dataset chronologically (70% in-sample, 30% out-of-sample) so the most recent data is held out. Patterns whose out-of-sample win rate drops more than 10 percentage points, or whose out-of-sample sample is too small, are flagged as degraded.",
-      "All computation runs in your browser. Nothing is uploaded — your data and results live only in this tab until you close it.",
+      "Every imported field first passes through a versioned trading definition. Non-stationary prices and cumulative totals are converted into relative distance, ATR, percentile, change, slope, structure, and event relationships before discovery; their literal raw levels are excluded.",
+      "Each pattern is a combination of 2-6 conditions on deterministic features and events. Events such as pivots, divergence, crossings, rejection, breakouts, compression, expansion, regimes, and sequences are detected first; forward outcomes are then measured separately.",
+      "Outcomes include final return, MFE/MAE, median movement, target and stop hit rates, time-to-target, and target-before-stop probability. Confidence intervals and a multiple-testing-adjusted false-discovery estimate prevent a small sample or a large search from being presented as certainty.",
+      "Validation uses a recent 30% holdout plus expanding chronological walk-forward folds. Cross-symbol and cross-timeframe survival are reported only when independent datasets were actually evaluated; a single dataset is not labeled 100% survival.",
+      "Uploaded research rows and statistical calculations remain in your browser. The optional Gemini definition compiler sends only sampled column summary statistics, user notes, and optional indicator source; it never receives the uploaded row history or calculates profitability.",
     ],
   };
 

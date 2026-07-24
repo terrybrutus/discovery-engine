@@ -114,6 +114,7 @@ function measureMetrics(
   bars: OHLCVBar[],
   matches: number[],
   horizon: number,
+  directionHint?: Direction,
 ): PatternMetrics {
   if (matches.length === 0) {
     return {
@@ -122,7 +123,7 @@ function measureMetrics(
       avgMAE: 0,
       avgMFE: 0,
       sampleSize: 0,
-      direction: "neutral",
+      direction: directionHint ?? "neutral",
     };
   }
   let sumRet = 0;
@@ -158,7 +159,8 @@ function measureMetrics(
   const n = matches.length;
   // Direction is derived from the matches exactly as in discovery's
   // evaluatePattern: bullCount >= bearCount ? bullish : bearish.
-  const direction: Direction = bull >= bear ? "bullish" : "bearish";
+  const direction: Direction =
+    directionHint ?? (bull >= bear ? "bullish" : "bearish");
   let wins = 0;
   for (let m = 0; m < matches.length; m++) {
     const ret = rets[m];
@@ -178,13 +180,74 @@ function measureMetrics(
   // field for it, so we don't store it here, but computing it via the shared
   // helper keeps the formula identical across engines.
   void computeMfeMaeRatio(avgMFE, avgMAE);
+  const winRate = (wins / n) * 100;
+  const z = 1.959963984540054;
+  const proportion = wins / n;
+  const denominator = 1 + (z * z) / n;
+  const center = (proportion + (z * z) / (2 * n)) / denominator;
+  const margin =
+    (z *
+      Math.sqrt((proportion * (1 - proportion)) / n + (z * z) / (4 * n * n))) /
+    denominator;
   return {
-    winRate: (wins / n) * 100,
+    winRate,
     avgMove: sumRet / n,
     avgMAE,
     avgMFE,
     sampleSize: n,
     direction,
+    winRateInterval: [
+      Math.max(0, (center - margin) * 100),
+      Math.min(100, (center + margin) * 100),
+    ],
+  };
+}
+
+function walkForwardAudit(
+  bars: OHLCVBar[],
+  pattern: Pattern,
+  lookups: Map<string, FeatureLookup>,
+  foldCount = 4,
+): NonNullable<ValidationResult["walkForward"]> {
+  const folds = Math.max(2, Math.min(8, foldCount));
+  const initialTraining = 0.4;
+  const remaining = 1 - initialTraining;
+  const rates: number[] = [];
+  let passedFolds = 0;
+  for (let fold = 0; fold < folds; fold++) {
+    const start = Math.floor(
+      bars.length * (initialTraining + (remaining * fold) / folds),
+    );
+    const end = Math.floor(
+      bars.length * (initialTraining + (remaining * (fold + 1)) / folds),
+    );
+    const matches = findMatchesInRange(
+      bars,
+      pattern.conditions,
+      lookups,
+      start,
+      end,
+      pattern.horizon,
+    );
+    const metrics = measureMetrics(
+      bars,
+      matches,
+      pattern.horizon,
+      pattern.direction,
+    );
+    rates.push(metrics.winRate);
+    const directionHeld =
+      (pattern.direction === "bullish" && metrics.avgMove > 0) ||
+      (pattern.direction === "bearish" && metrics.avgMove < 0);
+    if (metrics.sampleSize >= 5 && metrics.winRate >= 50 && directionHeld) {
+      passedFolds++;
+    }
+  }
+  return {
+    folds,
+    passedFolds,
+    meanWinRate: rates.reduce((sum, value) => sum + value, 0) / rates.length,
+    worstWinRate: Math.min(...rates),
   };
 }
 
@@ -237,8 +300,8 @@ export interface SurvivalDataset {
  * feature matrix) so cross-symbol survival can be computed as the fraction
  * of datasets the pattern remains profitable on. When omitted (or empty),
  * the pattern is only evaluated on the primary dataset and
- * `crossSymbolSurvival` is 1.0 (the pattern trivially survives on the only
- * dataset examined).
+ * `crossSymbolSurvival` is `null`, because survival cannot be claimed
+ * without an independent symbol.
  */
 export function validatePatterns(
   dataset: Dataset,
@@ -280,11 +343,13 @@ export function validatePatterns(
       bars,
       inSampleMatches,
       pattern.horizon,
+      pattern.direction,
     );
     const outOfSampleMetrics = measureMetrics(
       bars,
       outOfSampleMatches,
       pattern.horizon,
+      pattern.direction,
     );
 
     // Market condition breakdown (over the full dataset).
@@ -295,8 +360,18 @@ export function validatePatterns(
       else bearMatches.push(idx);
     }
     const byMarketCondition = {
-      bull: measureMetrics(bars, bullMatches, pattern.horizon),
-      bear: measureMetrics(bars, bearMatches, pattern.horizon),
+      bull: measureMetrics(
+        bars,
+        bullMatches,
+        pattern.horizon,
+        pattern.direction,
+      ),
+      bear: measureMetrics(
+        bars,
+        bearMatches,
+        pattern.horizon,
+        pattern.direction,
+      ),
     };
 
     // Per-year breakdown.
@@ -310,7 +385,7 @@ export function validatePatterns(
       .sort((a, b) => a[0] - b[0])
       .map(([year, idxs]) => ({
         year,
-        metrics: measureMetrics(bars, idxs, pattern.horizon),
+        metrics: measureMetrics(bars, idxs, pattern.horizon, pattern.direction),
       }));
 
     // Per-condition breakdown (drop one condition at a time? No — re-evaluate
@@ -329,8 +404,18 @@ export function validatePatterns(
       }
       return {
         condition: cond,
-        inSample: measureMetrics(bars, inMatches, pattern.horizon),
-        outOfSample: measureMetrics(bars, outMatches, pattern.horizon),
+        inSample: measureMetrics(
+          bars,
+          inMatches,
+          pattern.horizon,
+          pattern.direction,
+        ),
+        outOfSample: measureMetrics(
+          bars,
+          outMatches,
+          pattern.horizon,
+          pattern.direction,
+        ),
       };
     });
 
@@ -375,13 +460,16 @@ export function validatePatterns(
     // datasets are supplied, the pattern is re-evaluated on each one (using
     // its own bars + feature matrix) and survival = profitable / total.
     let crossSymbolSurvival: number | null;
+    let crossTimeframeSurvival: number | null = null;
     if (additionalDatasets.length === 0) {
-      crossSymbolSurvival = 1.0;
+      crossSymbolSurvival = null;
     } else {
       // Build the lookup for each additional dataset once per pattern is
       // wasteful, but patterns are few (top 20) and datasets are few.
       let profitable = 0;
       let evaluated = 0;
+      let timeframeProfitable = 0;
+      let timeframeEvaluated = 0;
       // Primary dataset profitability: use the pooled (in+out) matches we
       // already computed. A pattern is profitable when its average move is
       // in its dominant direction.
@@ -426,6 +514,7 @@ export function validatePatterns(
           // No matches on this dataset: not profitable, but still counts
           // as an evaluated dataset (the pattern did not survive here).
           evaluated++;
+          if (ds.timeframe !== dataset.timeframe) timeframeEvaluated++;
           continue;
         }
         evaluated++;
@@ -442,8 +531,16 @@ export function validatePatterns(
           (dir === "bearish" && avgRet < 0) ||
           (dir === "neutral" && avgRet !== 0);
         if (isProfitable) profitable++;
+        if (ds.timeframe !== dataset.timeframe) {
+          timeframeEvaluated++;
+          if (isProfitable) timeframeProfitable++;
+        }
       }
       crossSymbolSurvival = evaluated > 0 ? profitable / evaluated : null;
+      crossTimeframeSurvival =
+        timeframeEvaluated > 0
+          ? timeframeProfitable / timeframeEvaluated
+          : null;
     }
 
     results.push({
@@ -458,6 +555,8 @@ export function validatePatterns(
       conditionBreakdowns,
       directionAdjustedMfeMaeRatio,
       crossSymbolSurvival,
+      crossTimeframeSurvival,
+      walkForward: walkForwardAudit(bars, pattern, lookups),
     });
   }
 

@@ -55,6 +55,9 @@ const DEFAULT_CONFIG: DiscoveryConfig = {
   mfeMaeRatioEnabled: true, // legacy, kept for backward compat
   mfeMaeRatioMode: "positive",
   holdWindowAutoFind: false,
+  outcomeTargetsPct: [0.1, 0.25, 0.5, 1],
+  outcomeStopsPct: [0.1, 0.25, 0.5, 1],
+  walkForwardFolds: 4,
 };
 
 const DEFAULT_PROGRESS: DiscoveryProgress = {
@@ -194,6 +197,33 @@ export function selectFeatureCategories(state: EngineState): FeatureCategory[] {
 // Cancellation flag held outside React state to avoid re-renders.
 let cancelFlag = { cancelled: false };
 
+/** Read-only prefix view used for the in-sample discovery window. It avoids
+ * copying every causally aligned feature into another large array. */
+function prefixSeries(
+  source: FeatureMatrix[string],
+  length: number,
+): FeatureMatrix[string] {
+  const target = new Array<number | string | undefined>(length);
+  return new Proxy(target, {
+    get(array, property, receiver) {
+      if (typeof property === "string" && /^\d+$/.test(property)) {
+        return source[Number(property)];
+      }
+      return Reflect.get(array, property, receiver);
+    },
+    has(array, property) {
+      if (typeof property === "string" && /^\d+$/.test(property)) {
+        const index = Number(property);
+        return index >= 0 && index < length;
+      }
+      return Reflect.has(array, property);
+    },
+    set() {
+      return false;
+    },
+  });
+}
+
 function buildDatasetFeatures(
   dataset: Dataset,
   overrides: FeatureOverrides,
@@ -307,16 +337,13 @@ async function validateMemoryBounded(
   const patternById = new Map(patterns.map((pattern) => [pattern.id, pattern]));
   const totals = new Map(
     baseResults.map((result) => {
-      const pattern = patternById.get(result.patternId);
-      const evaluated = result.outOfSampleMetrics.sampleSize > 0 ? 1 : 0;
       return [
         result.patternId,
         {
-          evaluated,
-          profitable:
-            evaluated > 0 && pattern && resultIsProfitable(result, pattern)
-              ? 1
-              : 0,
+          symbolEvaluated: 0,
+          symbolProfitable: 0,
+          timeframeEvaluated: 0,
+          timeframeProfitable: 0,
         },
       ];
     }),
@@ -365,11 +392,18 @@ async function validateMemoryBounded(
       const pairProfitable = Math.round(
         (pairResult.crossSymbolSurvival ?? 0) * pairEvaluated,
       );
-      total.evaluated += 1;
-      total.profitable += Math.max(
+      const candidateProfitable = Math.max(
         0,
         Math.min(1, pairProfitable - primaryProfitable),
       );
+      if (candidate.instrumentKey !== target.instrumentKey) {
+        total.symbolEvaluated += 1;
+        total.symbolProfitable += candidateProfitable;
+      }
+      if (candidate.timeframe !== target.timeframe) {
+        total.timeframeEvaluated += 1;
+        total.timeframeProfitable += candidateProfitable;
+      }
     }
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
   }
@@ -379,8 +413,12 @@ async function validateMemoryBounded(
     return {
       ...result,
       crossSymbolSurvival:
-        total && total.evaluated > 0
-          ? total.profitable / total.evaluated
+        total && total.symbolEvaluated > 0
+          ? total.symbolProfitable / total.symbolEvaluated
+          : null,
+      crossTimeframeSurvival:
+        total && total.timeframeEvaluated > 0
+          ? total.timeframeProfitable / total.timeframeEvaluated
           : null,
     };
   });
@@ -788,10 +826,24 @@ export const useEngineStore = create<EngineState>((set, get) => ({
           featureValuesByDataset,
         );
         const targetLabel = target.label ?? target.name;
+        // Discovery is trained strictly on the oldest 70%. Candidate
+        // thresholds, combinations, direction, and ranking cannot see the
+        // newest 30%, which remains genuinely untouched until validation.
+        const discoveryEnd = Math.max(
+          discoveryConfig.horizon + 2,
+          Math.floor(target.bars.length * 0.7),
+        );
+        const discoveryBars = target.bars.slice(0, discoveryEnd);
+        const discoveryMatrix: FeatureMatrix = Object.fromEntries(
+          Object.entries(research.matrix).map(([featureId, values]) => [
+            featureId,
+            prefixSeries(values, discoveryEnd),
+          ]),
+        );
         const discovered = await runDiscovery(
-          target.bars,
+          discoveryBars,
           research.features,
-          research.matrix,
+          discoveryMatrix,
           { ...discoveryConfig, maxCombinations: budgetPerTarget },
           (progress) => {
             set({
@@ -814,6 +866,18 @@ export const useEngineStore = create<EngineState>((set, get) => ({
           targetDatasetId: target.id,
           targetDatasetLabel: targetLabel,
           targetTimeframe: target.timeframe,
+          coverage: pattern.coverage
+            ? {
+                ...pattern.coverage,
+                occurrencesPerSymbol: {
+                  [target.instrumentKey || targetLabel]:
+                    pattern.coverage.totalOccurrences,
+                },
+                occurrencesPerTimeframe: {
+                  [target.timeframe]: pattern.coverage.totalOccurrences,
+                },
+              }
+            : undefined,
         }));
         // Unified mode already makes every selected timeline a target pass.
         // Explicit-target mode additionally computes cross-source survival,

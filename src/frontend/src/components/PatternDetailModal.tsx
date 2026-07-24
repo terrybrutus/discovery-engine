@@ -424,11 +424,95 @@ export function PatternDetailModal({
                 valueClass="capitalize text-primary"
                 hint="statistical reliability rating"
               />
+              <MetricRow
+                label="False-discovery estimate"
+                value={
+                  pattern.falseDiscoveryRate == null
+                    ? "—"
+                    : `${(pattern.falseDiscoveryRate * 100).toFixed(2)}%`
+                }
+                hint="multiple-testing-adjusted estimate across all combinations tested"
+              />
             </div>
           </div>
         </div>
 
         <Separator />
+
+        {pattern.outcomeProfile ? (
+          <>
+            <div className="flex flex-col gap-3">
+              <div>
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Path-dependent outcomes
+                </h3>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  The event is measured separately from what happened afterward:
+                  median movement, target reach, stop reach, and
+                  target-before-stop probability.
+                </p>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <div className="rounded border border-border bg-muted/20 p-2">
+                  <div className="text-[10px] uppercase text-muted-foreground">
+                    Median move
+                  </div>
+                  <div className="font-mono text-sm tabular-nums">
+                    {pattern.outcomeProfile.medianMove.toFixed(2)}%
+                  </div>
+                </div>
+                <div className="rounded border border-border bg-muted/20 p-2">
+                  <div className="text-[10px] uppercase text-muted-foreground">
+                    Median MFE
+                  </div>
+                  <div className="font-mono text-sm tabular-nums">
+                    {pattern.outcomeProfile.medianMFE.toFixed(2)}%
+                  </div>
+                </div>
+                <div className="rounded border border-border bg-muted/20 p-2">
+                  <div className="text-[10px] uppercase text-muted-foreground">
+                    Median MAE
+                  </div>
+                  <div className="font-mono text-sm tabular-nums">
+                    {pattern.outcomeProfile.medianMAE.toFixed(2)}%
+                  </div>
+                </div>
+              </div>
+              <div className="overflow-x-auto rounded border border-border">
+                <table className="w-full text-xs">
+                  <thead className="bg-muted/30 text-muted-foreground">
+                    <tr>
+                      <th className="px-2 py-1.5 text-left">Target</th>
+                      <th className="px-2 py-1.5 text-right">Hit rate</th>
+                      <th className="px-2 py-1.5 text-right">Median time</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pattern.outcomeProfile.targetHitRates.map((target) => (
+                      <tr
+                        key={target.targetPct}
+                        className="border-t border-border"
+                      >
+                        <td className="px-2 py-1.5 font-mono">
+                          {target.targetPct.toFixed(2)}%
+                        </td>
+                        <td className="px-2 py-1.5 text-right font-mono">
+                          {target.hitRate.toFixed(1)}%
+                        </td>
+                        <td className="px-2 py-1.5 text-right font-mono">
+                          {target.medianBars == null
+                            ? "—"
+                            : `${target.medianBars.toFixed(0)} bars`}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <Separator />
+          </>
+        ) : null}
 
         {/* ---- Coverage panel ---- */}
         {pattern.coverage ? (
