@@ -79,6 +79,8 @@ interface DiscoveryControlsProps {
   isRunning: boolean;
   /** When no features have been generated yet, controls are disabled with a hint. */
   featuresAvailable: boolean;
+  /** Optional page-level runner used when discovery includes extra analysis. */
+  onRun?: () => void;
 }
 
 /** Result of a Max Data probe — the loosest viable filter settings. */
@@ -92,6 +94,7 @@ interface MaxDataSuggestion {
 export function DiscoveryControls({
   isRunning,
   featuresAvailable,
+  onRun,
 }: DiscoveryControlsProps) {
   const config = useEngineStore((s) => s.discoveryConfig);
   const updateConfig = useEngineStore((s) => s.updateConfig);
@@ -741,7 +744,7 @@ export function DiscoveryControls({
             data-ocid="discovery_controls.run_button"
             className="flex-1"
             disabled={!featuresAvailable || enabledCount === 0}
-            onClick={() => void runDiscoveryAction()}
+            onClick={() => (onRun ? onRun() : void runDiscoveryAction())}
           >
             <Play className="size-4 fill-current" aria-hidden="true" />
             Run discovery

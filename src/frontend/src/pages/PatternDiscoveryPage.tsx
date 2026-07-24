@@ -1,5 +1,6 @@
 import { createActor } from "@/backend";
 import type { Backend } from "@/backend";
+import { CrossReferenceResultsTable } from "@/components/CrossReferencePage";
 import { DatasetSelector } from "@/components/DatasetSelector";
 import { DiscoveryControls } from "@/components/DiscoveryControls";
 import { EmptyState } from "@/components/EmptyState";
@@ -27,7 +28,7 @@ import {
   Telescope,
   Trash2,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 function formatDuration(ms: number): string {
@@ -53,6 +54,11 @@ export default function PatternDiscoveryPage() {
   const completedSteps = useEngineStore((s) => s.completedSteps);
   const setActiveTab = useEngineStore((s) => s.setActiveTab);
   const runDiscoveryAction = useEngineStore((s) => s.runDiscoveryAction);
+  const runCrossReferenceAction = useEngineStore(
+    (s) => s.runCrossReferenceAction,
+  );
+  const crossReferenceResults = useEngineStore((s) => s.crossReferenceResults);
+  const isCrossReferencing = useEngineStore((s) => s.isCrossReferencing);
   const datasets = useEngineStore((s) => s.datasets);
   const activeDatasetId = useEngineStore((s) => s.activeDatasetId);
   const setActiveDataset = useEngineStore((s) => s.setActiveDataset);
@@ -80,11 +86,60 @@ export default function PatternDiscoveryPage() {
   const [loadingRunId, setLoadingRunId] = useState<number | null>(null);
   const [deletingRunId, setDeletingRunId] = useState<number | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [selectedDatasetIds, setSelectedDatasetIds] = useState<string[]>([]);
+  const knownDatasetIds = useRef(new Set<string>());
 
   const featuresAvailable = features.length > 0;
   const isRunning = discoveryProgress.isRunning || isComputing;
   const hasRun = completedSteps.has("discoveryComplete");
   const hasResults = patterns.length > 0;
+
+  // Include every newly loaded file by default. A user's explicit
+  // deselections remain untouched until that file is removed.
+  useEffect(() => {
+    setSelectedDatasetIds((previous) => {
+      const currentIds = datasets.map((dataset) => dataset.id);
+      const retained = previous.filter((id) => currentIds.includes(id));
+      return [
+        ...retained,
+        ...currentIds.filter((id) => !knownDatasetIds.current.has(id)),
+      ];
+    });
+    knownDatasetIds.current = new Set(datasets.map((dataset) => dataset.id));
+  }, [datasets]);
+
+  const toggleDatasetIncluded = (id: string): void => {
+    setSelectedDatasetIds((previous) =>
+      previous.includes(id)
+        ? previous.filter((candidate) => candidate !== id)
+        : [...previous, id],
+    );
+  };
+
+  const handleDiscoveryRun = async (): Promise<void> => {
+    await runDiscoveryAction();
+    const selectedDatasets = datasets.filter((dataset) =>
+      selectedDatasetIds.includes(dataset.id),
+    );
+    if (selectedDatasets.length < 2) return;
+
+    const columns = Array.from(
+      new Set(
+        selectedDatasets.flatMap((dataset) =>
+          dataset.columns
+            .filter(
+              (column) => column.type === "numeric" || column.type === "ohlcv",
+            )
+            .map((column) => column.label),
+        ),
+      ),
+    );
+    if (columns.length === 0) return;
+    await runCrossReferenceAction({
+      datasetIds: selectedDatasets.map((dataset) => dataset.id),
+      columns,
+    });
+  };
 
   const pct =
     discoveryProgress.total > 0
@@ -278,6 +333,7 @@ export default function PatternDiscoveryPage() {
               <DiscoveryControls
                 isRunning={isRunning}
                 featuresAvailable={featuresAvailable}
+                onRun={() => void handleDiscoveryRun()}
               />
             </CardContent>
           </Card>
@@ -291,6 +347,8 @@ export default function PatternDiscoveryPage() {
             datasets={datasets}
             activeDatasetId={activeDatasetId}
             onSelect={setActiveDataset}
+            selectedDatasetIds={selectedDatasetIds}
+            onToggleSelected={toggleDatasetIncluded}
           />
 
           {/* Progress indicator */}
@@ -385,7 +443,7 @@ export default function PatternDiscoveryPage() {
               description="Set your filters on the left, then run discovery. The engine will test thousands of condition combinations across your features and rank the strongest repeating patterns by win rate, sample size, and confidence."
               hint="With the sample dataset and default settings, a run typically finishes in a few seconds."
               actionLabel="Run discovery"
-              onAction={() => void runDiscoveryAction()}
+              onAction={() => void handleDiscoveryRun()}
             />
           ) : !isRunning && hasRun && !hasResults ? (
             <EmptyState
@@ -393,8 +451,28 @@ export default function PatternDiscoveryPage() {
               title="No patterns matched your filters"
               description="Discovery ran but nothing cleared your minimum win rate and sample size. Try lowering the minimum win rate, reducing the minimum sample size, or enabling more feature categories."
               actionLabel="Run discovery again"
-              onAction={() => void runDiscoveryAction()}
+              onAction={() => void handleDiscoveryRun()}
             />
+          ) : null}
+
+          {isCrossReferencing ? (
+            <Card className="border-primary/30">
+              <CardContent className="px-5 py-4 text-sm text-muted-foreground">
+                Automatically aligning all selected datasets and numeric fields
+                by timestamp…
+              </CardContent>
+            </Card>
+          ) : crossReferenceResults.length > 0 ? (
+            <div className="flex flex-col gap-3">
+              <div className="rounded-md border border-border bg-card px-4 py-2.5 text-sm">
+                <span className="font-mono font-semibold text-primary">
+                  {crossReferenceResults.length.toLocaleString()}
+                </span>{" "}
+                cross-timeframe coincidences found automatically across{" "}
+                {selectedDatasetIds.length} selected datasets.
+              </div>
+              <CrossReferenceResultsTable results={crossReferenceResults} />
+            </div>
           ) : null}
         </section>
       </div>

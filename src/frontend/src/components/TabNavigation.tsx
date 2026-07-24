@@ -31,12 +31,6 @@ const TABS: TabDef[] = [
     shortLabel: "Validate",
   },
   {
-    id: "crossReference",
-    label: "Cross-Reference",
-    requires: "dataLoaded",
-    shortLabel: "X-Ref",
-  },
-  {
     id: "report",
     label: "Report",
     requires: "validationComplete",

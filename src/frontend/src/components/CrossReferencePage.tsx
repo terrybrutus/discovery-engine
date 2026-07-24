@@ -13,7 +13,7 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 /**
@@ -37,6 +37,19 @@ export default function CrossReferencePage() {
 
   const [selectedDatasetIds, setSelectedDatasetIds] = useState<string[]>([]);
   const [selectedColumns, setSelectedColumns] = useState<string[]>([]);
+  const knownDatasetIds = useRef(new Set<string>());
+  const knownColumns = useRef(new Set<string>());
+
+  // Multi-file upload already expresses intent: include everything by
+  // default, while preserving any explicit user deselections.
+  useEffect(() => {
+    const currentIds = datasets.map((dataset) => dataset.id);
+    setSelectedDatasetIds((previous) => [
+      ...previous.filter((id) => currentIds.includes(id)),
+      ...currentIds.filter((id) => !knownDatasetIds.current.has(id)),
+    ]);
+    knownDatasetIds.current = new Set(currentIds);
+  }, [datasets]);
 
   const hasRun = completedSteps.has("crossReferenceComplete");
   const hasResults = crossReferenceResults.length > 0;
@@ -47,17 +60,24 @@ export default function CrossReferencePage() {
     for (const id of selectedDatasetIds) {
       const ds = datasets.find((d) => d.id === id);
       if (ds) {
-        for (const col of ds.originalColumns) set.add(col);
+        for (const col of ds.columns) {
+          if (col.type === "numeric" || col.type === "ohlcv") {
+            set.add(col.label);
+          }
+        }
       }
     }
     return Array.from(set);
   }, [selectedDatasetIds, datasets]);
 
-  // Prune selected columns that are no longer available when datasets change.
+  // Select newly available columns automatically and preserve manual
+  // deselections for columns the user has already seen.
   useEffect(() => {
-    setSelectedColumns((prev) =>
-      prev.filter((c) => availableColumns.includes(c)),
-    );
+    setSelectedColumns((previous) => [
+      ...previous.filter((column) => availableColumns.includes(column)),
+      ...availableColumns.filter((column) => !knownColumns.current.has(column)),
+    ]);
+    knownColumns.current = new Set(availableColumns);
   }, [availableColumns]);
 
   // Toast when a run finishes.
@@ -391,7 +411,7 @@ function PageHeading() {
  * contributing dataset get the `.correlation-row-linked` accent stripe.
  * Numeric values use font-mono tabular-nums for the terminal aesthetic.
  */
-function CrossReferenceResultsTable({
+export function CrossReferenceResultsTable({
   results,
 }: {
   results: CrossReferenceResult[];

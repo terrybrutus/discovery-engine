@@ -9,6 +9,10 @@ interface DatasetSelectorProps {
   activeDatasetId: string | null;
   /** Called when the user picks a dataset to make active. */
   onSelect: (id: string) => void;
+  /** Datasets included in automatic multi-timeframe analysis. */
+  selectedDatasetIds?: string[];
+  /** Toggle inclusion without changing the active feature dataset. */
+  onToggleSelected?: (id: string) => void;
 }
 
 /**
@@ -25,6 +29,8 @@ export function DatasetSelector({
   datasets,
   activeDatasetId,
   onSelect,
+  selectedDatasetIds,
+  onToggleSelected,
 }: DatasetSelectorProps) {
   if (datasets.length === 0) {
     return (
@@ -63,7 +69,9 @@ export function DatasetSelector({
           </h2>
         </div>
         <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
-          {datasets.length} loaded
+          {selectedDatasetIds
+            ? `${selectedDatasetIds.length}/${datasets.length} included`
+            : `${datasets.length} loaded`}
         </span>
       </div>
 
@@ -75,19 +83,31 @@ export function DatasetSelector({
           const isActive = ds.id === activeDatasetId;
           const label = ds.label ?? ds.name;
           return (
-            <li key={ds.id}>
+            <li
+              key={ds.id}
+              className={cn(
+                "flex w-full items-center rounded-md border transition-smooth",
+                isActive
+                  ? "border-primary bg-primary/5"
+                  : "border-border bg-background/40 hover:border-primary/40 hover:bg-card/60",
+              )}
+            >
+              {selectedDatasetIds && onToggleSelected ? (
+                <input
+                  type="checkbox"
+                  checked={selectedDatasetIds.includes(ds.id)}
+                  onChange={() => onToggleSelected(ds.id)}
+                  aria-label={`Include ${label} in multi-timeframe analysis`}
+                  className="ml-3 size-4 shrink-0 accent-[oklch(var(--primary))]"
+                />
+              ) : null}
               <button
                 type="button"
                 data-ocid={`dataset_selector.item.${i + 1}`}
                 data-active={isActive ? "true" : "false"}
                 aria-pressed={isActive}
                 onClick={() => onSelect(ds.id)}
-                className={cn(
-                  "flex w-full items-center gap-2.5 rounded-md border px-3 py-2 text-left transition-smooth outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
-                  isActive
-                    ? "border-primary bg-primary/5"
-                    : "border-border bg-background/40 hover:border-primary/40 hover:bg-card/60",
-                )}
+                className="flex min-w-0 flex-1 items-center gap-2.5 rounded-md px-3 py-2 text-left outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
               >
                 {isActive ? (
                   <Check
@@ -121,8 +141,8 @@ export function DatasetSelector({
           aria-hidden="true"
         />
         <p className="text-xs leading-relaxed text-muted-foreground">
-          Discovery runs against one dataset at a time. Cross-reference uses
-          multiple. Pick the dataset you want to explore here.
+          The highlighted dataset supplies the base patterns. Checked datasets
+          are automatically cross-referenced during the same discovery run.
         </p>
       </div>
     </div>
