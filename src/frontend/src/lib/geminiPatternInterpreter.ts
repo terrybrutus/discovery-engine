@@ -1,6 +1,10 @@
 import type { Pattern, ValidationResult } from "@/types";
 
-const MODEL = "gemini-2.5-flash-lite";
+// Keep interpretation on the same generally available, low-cost model as the
+// definition compiler.
+const MODEL = "gemini-3.5-flash-lite";
+const INPUT_PRICE_PER_MILLION = 0.3;
+const OUTPUT_PRICE_PER_MILLION = 2.5;
 
 export interface InterpretedPattern {
   patternId: string;
@@ -25,7 +29,10 @@ export function previewInterpretationCost(patterns: Pattern[]): number {
   const inputTokens =
     Math.ceil(JSON.stringify(patterns.slice(0, 20)).length / 4) + 1500;
   const outputTokens = Math.max(1500, Math.min(8000, patterns.length * 250));
-  return (inputTokens / 1_000_000) * 0.1 + (outputTokens / 1_000_000) * 0.4;
+  return (
+    (inputTokens / 1_000_000) * INPUT_PRICE_PER_MILLION +
+    (outputTokens / 1_000_000) * OUTPUT_PRICE_PER_MILLION
+  );
 }
 
 export async function interpretPatternsWithGemini(
@@ -128,7 +135,8 @@ export async function interpretPatternsWithGemini(
       promptTokens,
       outputTokens,
       estimatedCostUsd:
-        (promptTokens / 1_000_000) * 0.1 + (outputTokens / 1_000_000) * 0.4,
+        (promptTokens / 1_000_000) * INPUT_PRICE_PER_MILLION +
+        (outputTokens / 1_000_000) * OUTPUT_PRICE_PER_MILLION,
     },
   };
 }

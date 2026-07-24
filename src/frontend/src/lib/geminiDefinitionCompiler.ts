@@ -1,9 +1,11 @@
 import { validateDefinition } from "@/lib/definitionRegistry";
 import type { Dataset, IndicatorDefinition } from "@/types";
 
-const MODEL = "gemini-2.5-flash-lite";
-const INPUT_PRICE_PER_MILLION = 0.1;
-const OUTPUT_PRICE_PER_MILLION = 0.4;
+// GA low-cost model. The previous 2.5 Flash-Lite endpoint is unavailable to
+// new Gemini API users.
+const MODEL = "gemini-3.5-flash-lite";
+const INPUT_PRICE_PER_MILLION = 0.3;
+const OUTPUT_PRICE_PER_MILLION = 2.5;
 const MAX_SOURCE_CHARS = 80_000;
 
 export interface DefinitionCompilationRequest {
