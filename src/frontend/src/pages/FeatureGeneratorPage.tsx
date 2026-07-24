@@ -146,7 +146,9 @@ export default function FeatureGeneratorPage() {
               previous-session levels, rolling boxes, relative Bollinger/VWAP
               context, and semantic transformations for imported columns. During
               discovery, completed higher- and lower-timeframe states are
-              causally aligned to the active prediction target.
+              causally aligned to every selected outcome pass, including
+              developing higher-timeframe candles reconstructed from completed
+              lower-timeframe intrabars.
             </p>
           </div>
           <Button

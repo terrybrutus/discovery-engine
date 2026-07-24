@@ -20,6 +20,7 @@ export function Header() {
   const dataset = useEngineStore((s) => s.dataset);
   const datasets = useEngineStore((s) => s.datasets);
   const selectedDatasetIds = useEngineStore((s) => s.selectedDatasetIds);
+  const targetMode = useEngineStore((s) => s.targetMode);
   const loadSampleDataset = useEngineStore((s) => s.loadSampleDataset);
   const [loadModalOpen, setLoadModalOpen] = useState(false);
 
@@ -36,7 +37,9 @@ export function Header() {
         : "";
 
   const tooltip = dataset
-    ? `${selectedDatasetIds.length} selected datasets contribute causally aligned context. "${activeName}" is the prediction target with ${dataset.rowCount.toLocaleString()} outcome bars.`
+    ? targetMode === "all"
+      ? "Every selected dataset is tested as an outcome target in turn; the others provide causally aligned context."
+      : `${selectedDatasetIds.length} selected datasets contribute causally aligned context. "${activeName}" is the explicit prediction target with ${dataset.rowCount.toLocaleString()} outcome bars.`
     : undefined;
 
   return (
@@ -77,7 +80,9 @@ export function Header() {
             <span className="hidden text-xs text-muted-foreground tabular-nums md:inline">
               · {selectedDatasetIds.length}/{total} selected ·{" "}
               {selectedRows.toLocaleString()} research bars ·{" "}
-              {dataset.rowCount.toLocaleString()} target bars
+              {targetMode === "all"
+                ? "all selected targets"
+                : `${dataset.rowCount.toLocaleString()} target bars`}
             </span>
           </div>
         ) : null}

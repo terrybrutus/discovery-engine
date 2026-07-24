@@ -160,6 +160,10 @@ export type Confidence = "low" | "moderate" | "high" | "very high";
 
 export interface Pattern {
   id: string;
+  /** Dataset whose future bars supplied this pattern's outcomes. */
+  targetDatasetId?: string;
+  targetDatasetLabel?: string;
+  targetTimeframe?: Timeframe;
   conditions: Condition[];
   /** Human-readable summary, e.g. "When RVOL is High AND time is 9:30-10:00". */
   label: string;

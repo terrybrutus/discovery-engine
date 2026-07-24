@@ -58,6 +58,8 @@ export default function PatternDiscoveryPage() {
   const featuresByDataset = useEngineStore((s) => s.featuresByDataset);
   const toggleDatasetSelected = useEngineStore((s) => s.toggleDatasetSelected);
   const setActiveDataset = useEngineStore((s) => s.setActiveDataset);
+  const targetMode = useEngineStore((s) => s.targetMode);
+  const setTargetMode = useEngineStore((s) => s.setTargetMode);
   const researchContextDatasetIds = useEngineStore(
     (s) => s.researchContextDatasetIds,
   );
@@ -268,14 +270,49 @@ export default function PatternDiscoveryPage() {
             onToggleSelected={toggleDatasetSelected}
           />
 
+          <div className="grid grid-cols-2 gap-2 rounded-md border border-border bg-card p-2">
+            <button
+              type="button"
+              onClick={() => setTargetMode("all")}
+              aria-pressed={targetMode === "all"}
+              className={`rounded px-3 py-2 text-left text-sm ${
+                targetMode === "all"
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-background text-muted-foreground"
+              }`}
+            >
+              <span className="block font-medium">All selected targets</span>
+              <span className="block text-[11px] opacity-80">
+                Test every file as the outcome timeline
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setTargetMode("single")}
+              aria-pressed={targetMode === "single"}
+              className={`rounded px-3 py-2 text-left text-sm ${
+                targetMode === "single"
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-background text-muted-foreground"
+              }`}
+            >
+              <span className="block font-medium">One explicit target</span>
+              <span className="block text-[11px] opacity-80">
+                Use the highlighted file only
+              </span>
+            </button>
+          </div>
+
           <div className="grid gap-3 rounded-md border border-primary/25 bg-primary/5 px-4 py-3 text-sm sm:grid-cols-3">
             <div>
               <div className="text-xs text-muted-foreground">
                 Prediction target
               </div>
               <div className="font-medium text-foreground">
-                {datasets.find((item) => item.id === activeDatasetId)?.label ??
-                  "Active dataset"}
+                {targetMode === "all"
+                  ? `All ${selectedResearchDatasets.length} selected datasets`
+                  : (datasets.find((item) => item.id === activeDatasetId)
+                      ?.label ?? "Active dataset")}
               </div>
             </div>
             <div>

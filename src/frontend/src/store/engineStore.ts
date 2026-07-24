@@ -78,6 +78,8 @@ interface EngineState {
   datasets: Dataset[];
   /** Id of the currently active dataset, or null if none. */
   activeDatasetId: string | null;
+  /** Test one explicit outcome timeline or every selected dataset in turn. */
+  targetMode: "all" | "single";
   /** Datasets included in discovery, validation, and timeframe alignment. */
   selectedDatasetIds: string[];
   features: Feature[];
@@ -128,6 +130,7 @@ interface EngineState {
   removeDataset: (id: string) => void;
   /** Set the active dataset by id. */
   setActiveDataset: (id: string) => void;
+  setTargetMode: (mode: "all" | "single") => void;
   /** Include or exclude a dataset from multi-dataset research. */
   toggleDatasetSelected: (id: string) => void;
   /** Rename a dataset's user-facing label. */
@@ -207,6 +210,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
   dataset: null,
   datasets: [],
   activeDatasetId: null,
+  targetMode: "all",
   selectedDatasetIds: [],
   features: [],
   featureValues: null,
@@ -345,6 +349,16 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         activeTab: cachedFeatures.length > 0 ? "discovery" : "features",
         lastError: null,
       };
+    });
+  },
+
+  setTargetMode: (targetMode) => {
+    set({
+      targetMode,
+      patterns: [],
+      validationResults: [],
+      report: null,
+      discoveryProgress: DEFAULT_PROGRESS,
     });
   },
 
@@ -505,6 +519,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
       selectedDatasetIds,
       featuresByDataset,
       featureValuesByDataset,
+      targetMode,
     } = get();
     if (!dataset || !features.length || !featureValues) return;
     const selectedDatasets = datasets.filter(
@@ -512,8 +527,12 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         candidate.id === dataset.id ||
         selectedDatasetIds.includes(candidate.id),
     );
-    const research = buildMultiTimeframeResearchSpace(
-      dataset,
+    const targets =
+      targetMode === "all" && selectedDatasets.length > 1
+        ? selectedDatasets
+        : [dataset];
+    const previewResearch = buildMultiTimeframeResearchSpace(
+      targets[0],
       selectedDatasets,
       featuresByDataset,
       featureValuesByDataset,
@@ -525,57 +544,70 @@ export const useEngineStore = create<EngineState>((set, get) => ({
       lastError: null,
       discoveryProgress: { ...DEFAULT_PROGRESS, isRunning: true },
       patterns: [],
-      researchFeatures: research.features,
-      researchFeatureValues: research.matrix,
-      researchContextDatasetIds: research.contextDatasetIds,
-      researchTotalBars: research.totalSourceBars,
+      researchFeatures: previewResearch.features,
+      researchFeatureValues: previewResearch.matrix,
+      researchContextDatasetIds: previewResearch.contextDatasetIds,
+      researchTotalBars: previewResearch.totalSourceBars,
     });
 
     try {
-      // runDiscovery yields to the main thread between chunks via real
-      // setTimeout(0) awaits, so the browser stays responsive on large
-      // datasets. Any throw here is caught below and resets isComputing.
-      const patterns = await runDiscovery(
-        dataset.bars,
-        research.features,
-        research.matrix,
-        discoveryConfig,
-        (progress) => {
-          set({ discoveryProgress: progress });
-        },
-        () => cancelFlag.cancelled,
-        get().featureOverrides,
+      const allPatterns: Pattern[] = [];
+      const allValidationResults: ValidationResult[] = [];
+      const budgetPerTarget = Math.max(
+        1,
+        Math.floor(discoveryConfig.maxCombinations / targets.length),
       );
-
-      if (cancelFlag.cancelled) {
-        set({
-          isComputing: false,
-          discoveryProgress: { ...get().discoveryProgress, isRunning: false },
-        });
-        return;
-      }
-
-      const completed = new Set<CompletedStep>(get().completedSteps);
-      completed.add("discoveryComplete");
-      const activeMinutes = timeframeMinutes(dataset);
-      const additionalDatasets: SurvivalDataset[] = datasets
-        .filter(
-          (candidate) =>
-            candidate.id !== dataset.id &&
-            selectedDatasetIds.includes(candidate.id) &&
-            featureValuesByDataset[candidate.id],
-        )
-        .map((candidate) => {
-          const candidateResearch = buildMultiTimeframeResearchSpace(
-            candidate,
-            selectedDatasets,
-            featuresByDataset,
-            featureValuesByDataset,
-            dataset.id,
-          );
-          return {
+      let completedBudget = 0;
+      for (const target of targets) {
+        const research = buildMultiTimeframeResearchSpace(
+          target,
+          selectedDatasets,
+          featuresByDataset,
+          featureValuesByDataset,
+        );
+        const targetLabel = target.label ?? target.name;
+        const discovered = await runDiscovery(
+          target.bars,
+          research.features,
+          research.matrix,
+          { ...discoveryConfig, maxCombinations: budgetPerTarget },
+          (progress) => {
+            set({
+              discoveryProgress: {
+                ...progress,
+                tested: completedBudget + progress.tested,
+                total: budgetPerTarget * targets.length,
+                current: `[${target.timeframe} · ${targetLabel}] ${progress.current}`,
+              },
+            });
+          },
+          () => cancelFlag.cancelled,
+          get().featureOverrides,
+        );
+        if (cancelFlag.cancelled) break;
+        const tagged = discovered.map((pattern) => ({
+          ...pattern,
+          id: `${target.id}__${pattern.id}`,
+          targetDatasetId: target.id,
+          targetDatasetLabel: targetLabel,
+          targetTimeframe: target.timeframe,
+        }));
+        const activeMinutes = timeframeMinutes(target);
+        const additionalDatasets: SurvivalDataset[] = selectedDatasets
+          .filter(
+            (candidate) =>
+              candidate.id !== target.id &&
+              featureValuesByDataset[candidate.id],
+          )
+          .map((candidate) => ({
             dataset: candidate,
-            matrix: candidateResearch.matrix,
+            matrix: buildMultiTimeframeResearchSpace(
+              candidate,
+              selectedDatasets,
+              featuresByDataset,
+              featureValuesByDataset,
+              target.id,
+            ).matrix,
             horizon: Math.max(
               1,
               Math.round(
@@ -583,37 +615,49 @@ export const useEngineStore = create<EngineState>((set, get) => ({
                   timeframeMinutes(candidate),
               ),
             ),
-          };
+          }));
+        const validation = validatePatterns(
+          target,
+          research.features,
+          research.matrix,
+          tagged.slice(0, 20),
+          additionalDatasets,
+        );
+        const validationByPattern = new Map(
+          validation.map((result) => [result.patternId, result]),
+        );
+        allPatterns.push(
+          ...tagged.map((pattern) => {
+            const result = validationByPattern.get(pattern.id);
+            return {
+              ...pattern,
+              validationStatus: result
+                ? result.degraded
+                  ? ("degraded" as const)
+                  : ("held" as const)
+                : ("not-tested" as const),
+              confidence: result?.degraded
+                ? ("low" as const)
+                : pattern.confidence,
+            };
+          }),
+        );
+        allValidationResults.push(...validation);
+        completedBudget += budgetPerTarget;
+      }
+      if (cancelFlag.cancelled) {
+        set({
+          isComputing: false,
+          discoveryProgress: { ...get().discoveryProgress, isRunning: false },
         });
-      const validationResults = validatePatterns(
-        dataset,
-        research.features,
-        research.matrix,
-        patterns.slice(0, 20),
-        additionalDatasets,
-      );
-      const validationByPattern = new Map(
-        validationResults.map((result) => [result.patternId, result]),
-      );
-      const patternsWithValidation = patterns.map((pattern) => {
-        const validation = validationByPattern.get(pattern.id);
-        if (!validation) {
-          return { ...pattern, validationStatus: "not-tested" as const };
-        }
-        return {
-          ...pattern,
-          validationStatus: validation.degraded
-            ? ("degraded" as const)
-            : ("held" as const),
-          confidence: validation.degraded
-            ? ("low" as const)
-            : pattern.confidence,
-        };
-      });
+        return;
+      }
+      const completed = new Set<CompletedStep>(get().completedSteps);
+      completed.add("discoveryComplete");
       completed.add("validationComplete");
       set({
-        patterns: patternsWithValidation,
-        validationResults,
+        patterns: allPatterns.sort((a, b) => b.score - a.score).slice(0, 100),
+        validationResults: allValidationResults,
         isComputing: false,
         discoveryProgress: { ...get().discoveryProgress, isRunning: false },
         completedSteps: completed,

@@ -46,6 +46,155 @@ function completedSourceIndexByTarget(
   return indices;
 }
 
+function addDevelopingHigherTimeframeFeatures(
+  target: Dataset,
+  source: Dataset,
+  alignedIndices: number[],
+  features: Feature[],
+  matrix: FeatureMatrix,
+  prefix: string,
+): void {
+  const targetInterval = datasetIntervalMs(target);
+  const sourceInterval = datasetIntervalMs(source);
+  if (sourceInterval <= targetInterval) return;
+
+  const progress: (number | undefined)[] = [];
+  const bodyPct: (number | undefined)[] = [];
+  const rangePct: (number | undefined)[] = [];
+  const location: (number | undefined)[] = [];
+  const event: (string | undefined)[] = [];
+  let formingStart = Number.NaN;
+  let open = 0;
+  let high = Number.NEGATIVE_INFINITY;
+  let low = Number.POSITIVE_INFINITY;
+  let firstHighTouch = -1;
+  let firstLowTouch = -1;
+
+  for (let i = 0; i < target.bars.length; i++) {
+    const completedIndex = alignedIndices[i];
+    const candidate = source.bars[completedIndex + 1];
+    const decisionTime = target.bars[i].timestamp + targetInterval;
+    if (
+      !candidate ||
+      candidate.timestamp >= decisionTime ||
+      decisionTime > candidate.timestamp + sourceInterval
+    ) {
+      progress.push(undefined);
+      bodyPct.push(undefined);
+      rangePct.push(undefined);
+      location.push(undefined);
+      event.push(undefined);
+      continue;
+    }
+
+    if (candidate.timestamp !== formingStart) {
+      formingStart = candidate.timestamp;
+      open = target.bars[i].open;
+      high = Number.NEGATIVE_INFINITY;
+      low = Number.POSITIVE_INFINITY;
+      firstHighTouch = -1;
+      firstLowTouch = -1;
+    }
+    const bar = target.bars[i];
+    high = Math.max(high, bar.high);
+    low = Math.min(low, bar.low);
+    const previous = completedIndex >= 0 ? source.bars[completedIndex] : null;
+    if (previous && firstHighTouch < 0 && bar.high > previous.high) {
+      firstHighTouch = i;
+    }
+    if (previous && firstLowTouch < 0 && bar.low < previous.low) {
+      firstLowTouch = i;
+    }
+    const span = high - low;
+    progress.push(
+      Math.min(100, ((decisionTime - formingStart) / sourceInterval) * 100),
+    );
+    bodyPct.push(open !== 0 ? ((bar.close - open) / Math.abs(open)) * 100 : 0);
+    rangePct.push(open !== 0 ? (span / Math.abs(open)) * 100 : 0);
+    location.push(span > 0 ? ((bar.close - low) / span) * 100 : 50);
+    event.push(
+      firstHighTouch >= 0 && firstLowTouch >= 0
+        ? firstHighTouch < firstLowTouch
+          ? "Swept prior high before prior low"
+          : "Swept prior low before prior high"
+        : firstHighTouch >= 0
+          ? "Swept prior high"
+          : firstLowTouch >= 0
+            ? "Swept prior low"
+            : "Inside prior range",
+    );
+  }
+
+  const sourceLabel = source.label ?? source.name;
+  const add = (
+    suffix: string,
+    name: string,
+    description: string,
+    type: Feature["type"],
+    values: FeatureMatrix[string],
+    buckets?: string[],
+  ) => {
+    const id = `${prefix}developing_${suffix}`;
+    features.push({
+      id,
+      name: `[${source.timeframe} · ${sourceLabel}] Developing ${name}`,
+      category: "Multi-Timeframe",
+      description,
+      type,
+      enabled: true,
+      source: "builtin",
+      semantic: "multi-timeframe",
+      originDatasetId: source.id,
+      originTimeframe: source.timeframe,
+      buckets,
+      formula: `reconstructed from completed ${target.timeframe} intrabars only`,
+    });
+    matrix[id] = values;
+  };
+  add(
+    "progress",
+    "Candle Progress %",
+    `Elapsed portion of the currently forming ${source.timeframe} candle.`,
+    "numeric",
+    progress,
+  );
+  add(
+    "body_pct",
+    "Body %",
+    `Developing ${source.timeframe} body reconstructed without future intrabars.`,
+    "numeric",
+    bodyPct,
+  );
+  add(
+    "range_pct",
+    "Range %",
+    `Developing ${source.timeframe} range reconstructed without future intrabars.`,
+    "numeric",
+    rangePct,
+  );
+  add(
+    "location",
+    "Close Location",
+    `Current close location inside the reconstructed ${source.timeframe} range.`,
+    "numeric",
+    location,
+  );
+  add(
+    "event_order",
+    "Sweep Order",
+    `Order in which completed intrabars crossed the prior ${source.timeframe} high and low.`,
+    "categorical",
+    event,
+    [
+      "Inside prior range",
+      "Swept prior high",
+      "Swept prior low",
+      "Swept prior high before prior low",
+      "Swept prior low before prior high",
+    ],
+  );
+}
+
 export interface ResearchSpace {
   features: Feature[];
   matrix: FeatureMatrix;
@@ -104,6 +253,14 @@ export function buildMultiTimeframeResearchSpace(
       });
       matrix[id] = aligned;
     }
+    addDevelopingHigherTimeframeFeatures(
+      target,
+      source,
+      alignedIndices,
+      features,
+      matrix,
+      prefix,
+    );
   }
 
   return {

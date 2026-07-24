@@ -146,9 +146,10 @@ export function DatasetSelector({
           aria-hidden="true"
         />
         <p className="text-xs leading-relaxed text-muted-foreground">
-          The highlighted dataset supplies the future price outcomes. Every
-          checked dataset contributes its latest completed timeframe state as a
-          condition—never future bars.
+          In all-target mode, every checked dataset supplies outcomes in its own
+          pass. In single-target mode, the highlighted dataset supplies
+          outcomes. Other files provide completed and reconstructed intrabar
+          context—never future bars.
         </p>
       </div>
     </div>

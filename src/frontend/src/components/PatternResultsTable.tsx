@@ -257,6 +257,11 @@ export function PatternResultsTable({
                     {p.plainEnglishSentence ?? p.label}
                   </span>
                   <span className="flex items-center gap-1.5">
+                    {p.targetDatasetLabel ? (
+                      <span className="rounded border border-border px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
+                        target: {p.targetTimeframe} · {p.targetDatasetLabel}
+                      </span>
+                    ) : null}
                     <span
                       className={cn(
                         "inline-flex items-center gap-0.5 text-[10px] font-medium uppercase tracking-wide",
