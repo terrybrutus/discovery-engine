@@ -7,6 +7,7 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { isFeatureEligibleForDiscovery, runDiscovery } from "@/lib/discovery";
 import type { FeatureOverride, FeatureOverrides } from "@/lib/features";
+import { MULTI_TIMEFRAME_CATEGORY } from "@/lib/researchCategories";
 import { cn } from "@/lib/utils";
 import { selectFeatureCategories, useEngineStore } from "@/store/engineStore";
 import type { DiscoveryConfig, FeatureCategory } from "@/types";
@@ -113,9 +114,18 @@ export function DiscoveryControls({
   const setFeatureOverride = useEngineStore((s) => s.setFeatureOverride);
   const clearFeatureOverride = useEngineStore((s) => s.clearFeatureOverride);
   const targetMode = useEngineStore((s) => s.targetMode);
+  const datasets = useEngineStore((s) => s.datasets);
+  const selectedDatasetIds = useEngineStore((s) => s.selectedDatasetIds);
+  const activeDatasetId = useEngineStore((s) => s.activeDatasetId);
 
   // Categories exist only when the uploaded schema supports them.
   const categories = useEngineStore(selectFeatureCategories);
+  const multiSourceRequired =
+    datasets.filter((item) =>
+      targetMode === "all"
+        ? selectedDatasetIds.includes(item.id)
+        : item.id === activeDatasetId || selectedDatasetIds.includes(item.id),
+    ).length > 1;
 
   const disabled = isRunning || !featuresAvailable;
 
@@ -155,13 +165,18 @@ export function DiscoveryControls({
   const [maxDataError, setMaxDataError] = useState<string | null>(null);
 
   const toggleCategory = (cat: FeatureCategory, on: boolean) => {
+    if (cat === MULTI_TIMEFRAME_CATEGORY && multiSourceRequired && !on) return;
     const next = on
       ? [...config.enabledCategories, cat]
       : config.enabledCategories.filter((c) => c !== cat);
     updateConfig({ enabledCategories: next });
   };
 
-  const enabledCount = config.enabledCategories.length;
+  const enabledCount = categories.filter(
+    (category) =>
+      config.enabledCategories.includes(category) ||
+      (category === MULTI_TIMEFRAME_CATEGORY && multiSourceRequired),
+  ).length;
 
   // Split the depth options into Light (2-4) and Deep (5-6) groups for
   // clear labeling. The two groups render side by side with a visual divider
@@ -618,7 +633,9 @@ export function DiscoveryControls({
         </p>
         <div className="flex flex-col gap-2">
           {categories.map((cat) => {
-            const checked = config.enabledCategories.includes(cat);
+            const required =
+              cat === MULTI_TIMEFRAME_CATEGORY && multiSourceRequired;
+            const checked = config.enabledCategories.includes(cat) || required;
             const checkboxId = `discovery_controls.category.${cat.replace(/\s+/g, "_").toLowerCase()}`;
             return (
               <label
@@ -633,7 +650,7 @@ export function DiscoveryControls({
                   id={checkboxId}
                   data-ocid={checkboxId}
                   checked={checked}
-                  disabled={disabled}
+                  disabled={disabled || required}
                   onCheckedChange={(value) =>
                     toggleCategory(cat, value === true)
                   }
@@ -643,6 +660,11 @@ export function DiscoveryControls({
                   {LENS_DESCRIPTIONS[cat] ? (
                     <span className="text-[11px] leading-snug text-muted-foreground">
                       {LENS_DESCRIPTIONS[cat]}
+                    </span>
+                  ) : null}
+                  {required ? (
+                    <span className="text-[11px] leading-snug text-primary">
+                      Required while multiple datasets are selected.
                     </span>
                   ) : null}
                 </span>
@@ -669,7 +691,13 @@ export function DiscoveryControls({
             type="button"
             data-ocid="discovery_controls.categories_none"
             disabled={disabled}
-            onClick={() => updateConfig({ enabledCategories: [] })}
+            onClick={() =>
+              updateConfig({
+                enabledCategories: multiSourceRequired
+                  ? [MULTI_TIMEFRAME_CATEGORY]
+                  : [],
+              })
+            }
             className="text-xs text-muted-foreground hover:text-foreground hover:underline disabled:opacity-50"
           >
             Clear all

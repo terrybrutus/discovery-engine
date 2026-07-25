@@ -20,6 +20,10 @@ try {
   const { meetsConfluenceRequirement } = await server.ssrLoadModule(
     "/src/lib/patternConfluence.ts",
   );
+  const {
+    collectResearchCategories,
+    requireMultiTimeframeCategory,
+  } = await server.ssrLoadModule("/src/lib/researchCategories.ts");
 
   const makeCsv = (start, minutes, rows) => {
     const lines = ["time,open,high,low,close"];
@@ -140,6 +144,19 @@ try {
   if (!meetsConfluenceRequirement(crossSource, confluenceFeatures, 2)) {
     throw new Error("Cross-source pattern failed confluence.");
   }
+  const generatedCategories = collectResearchCategories(
+    [[confluenceFeatures[0]], [confluenceFeatures[1]]],
+    true,
+  );
+  if (!generatedCategories.includes("Multi-Timeframe")) {
+    throw new Error(
+      "Multi-Timeframe disappeared while collecting multi-source lenses.",
+    );
+  }
+  const repairedCategories = requireMultiTimeframeCategory(["Test"], true);
+  if (!repairedCategories.includes("Multi-Timeframe")) {
+    throw new Error("Runtime did not repair a stale multi-source lens config.");
+  }
 
   console.log(
     JSON.stringify(
@@ -153,6 +170,7 @@ try {
         intrabarPath: research.matrix[pathFeature.id][0],
         singleSourceRejected: true,
         crossSourceAccepted: true,
+        multiTimeframeLensPreserved: true,
       },
       null,
       2,

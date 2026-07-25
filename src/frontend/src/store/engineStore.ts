@@ -12,6 +12,10 @@ import {
   datasetIntervalMs,
 } from "@/lib/multiTimeframe";
 import { generateReport } from "@/lib/report";
+import {
+  collectResearchCategories,
+  requireMultiTimeframeCategory,
+} from "@/lib/researchCategories";
 import { getSampleDataset } from "@/lib/sampleData";
 import { deriveSemanticColumnFeatures } from "@/lib/semanticColumns";
 import { validatePatterns } from "@/lib/validation";
@@ -178,26 +182,34 @@ interface EngineState {
  */
 let cachedCategoryFeatures: Feature[] | null = null;
 let cachedCategoryCatalogs: Record<string, Feature[]> | null = null;
+let cachedCategorySelectedIds: string[] | null = null;
 let cachedFeatureCategories: FeatureCategory[] = [];
 
 export function selectFeatureCategories(state: EngineState): FeatureCategory[] {
   if (
     state.features === cachedCategoryFeatures &&
-    state.featuresByDataset === cachedCategoryCatalogs
+    state.featuresByDataset === cachedCategoryCatalogs &&
+    state.selectedDatasetIds === cachedCategorySelectedIds
   ) {
     return cachedFeatureCategories;
   }
 
-  const catalogs = Object.values(state.featuresByDataset);
+  const selectedCatalogs = state.selectedDatasetIds
+    .map((id) => state.featuresByDataset[id])
+    .filter((catalog): catalog is Feature[] => catalog != null);
+  const catalogs =
+    selectedCatalogs.length > 0
+      ? selectedCatalogs
+      : Object.values(state.featuresByDataset);
   const availableFeatures =
     catalogs.length > 0 ? catalogs.flat() : state.features;
-  const categorySet = new Set<FeatureCategory>();
-  for (const feature of availableFeatures) {
-    categorySet.add(feature.category);
-  }
   cachedCategoryFeatures = state.features;
   cachedCategoryCatalogs = state.featuresByDataset;
-  cachedFeatureCategories = [...categorySet];
+  cachedCategorySelectedIds = state.selectedDatasetIds;
+  cachedFeatureCategories = collectResearchCategories(
+    [availableFeatures],
+    selectedCatalogs.length > 1,
+  );
   return cachedFeatureCategories;
 }
 
@@ -672,13 +684,10 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         }
         const features = featuresByDataset[dataset.id] ?? [];
         const featureValues = featureValuesByDataset[dataset.id] ?? null;
-        const availableCategories = [
-          ...new Set(
-            Object.values(featuresByDataset)
-              .flat()
-              .map((feature) => feature.category),
-          ),
-        ];
+        const availableCategories = collectResearchCategories(
+          Object.values(featuresByDataset),
+          included.length > 1,
+        );
         const completed = new Set<CompletedStep>(get().completedSteps);
         completed.add("dataLoaded");
         completed.add("featuresGenerated");
@@ -853,6 +862,10 @@ export const useEngineStore = create<EngineState>((set, get) => ({
           discoveryMatrix,
           {
             ...discoveryConfig,
+            enabledCategories: requireMultiTimeframeCategory(
+              discoveryConfig.enabledCategories,
+              selectedDatasets.length > 1,
+            ),
             maxCombinations: budgetPerTarget,
             requireCrossSourceConfluence: selectedDatasets.length > 1,
             minConfluenceSources: Math.min(2, selectedDatasets.length),
