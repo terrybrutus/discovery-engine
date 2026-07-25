@@ -124,6 +124,12 @@ function makeFeature(
     primitive,
     formula,
     buckets,
+    definitionName: definition.canonicalName,
+    definitionParameters: definition.parameters
+      ? { ...definition.parameters }
+      : undefined,
+    definitionConfidence: definition.confidence,
+    definitionReviewed: definition.reviewed,
   };
 }
 

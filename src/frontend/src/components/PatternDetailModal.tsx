@@ -13,6 +13,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { adjustForCosts } from "@/lib/costAnalysis";
+import { formatDefinitionParameters } from "@/lib/reproductionRecipe";
 import { cn } from "@/lib/utils";
 import { useEngineStore } from "@/store/engineStore";
 import type {
@@ -369,6 +370,134 @@ export function PatternDetailModal({
 
         <Separator />
 
+        {pattern.reproductionRecipe ? (
+          <>
+            <div className="flex flex-col gap-3">
+              <div>
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Reproduction recipe
+                </h3>
+                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                  Exact calculation lineage and timing used by this discovery.
+                  This is generated from stored feature metadata, not invented
+                  by AI.
+                </p>
+              </div>
+
+              <div className="grid gap-2 sm:grid-cols-2">
+                <RecipeFact
+                  label="Market / timeframe"
+                  value={`${pattern.targetDatasetLabel ?? "Current target"} · ${pattern.targetTimeframe ?? "unknown timeframe"}`}
+                />
+                <RecipeFact
+                  label="Signal timing"
+                  value="After the target observation closes"
+                />
+                <RecipeFact
+                  label="Research entry"
+                  value="Signal observation close"
+                />
+                <RecipeFact
+                  label="Research exit"
+                  value={`${pattern.horizon} target observations later, at close`}
+                />
+              </div>
+
+              <div className="space-y-2">
+                {pattern.reproductionRecipe.conditions.map(
+                  (condition, index) => (
+                    <div
+                      key={`${condition.featureId}-${index}`}
+                      className="rounded-md border border-border bg-muted/20 p-3"
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div>
+                          <div className="font-mono text-sm font-semibold text-foreground">
+                            {index + 1}. {condition.expression}
+                          </div>
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            {condition.definitionName ??
+                              (condition.source === "custom"
+                                ? "Uploaded field"
+                                : "Built-in measurement")}
+                            {condition.primitive
+                              ? ` · ${condition.primitive}`
+                              : ""}
+                            {condition.originTimeframe
+                              ? ` · source ${condition.originTimeframe}`
+                              : ""}
+                            {condition.definitionConfidence != null
+                              ? ` · mapping ${(condition.definitionConfidence * 100).toFixed(0)}%`
+                              : ""}
+                          </div>
+                        </div>
+                        <span
+                          className={cn(
+                            "rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase",
+                            condition.source === "builtin" ||
+                              condition.definitionReviewed
+                              ? "border-primary/30 text-primary"
+                              : "border-warning/30 text-warning",
+                          )}
+                        >
+                          {condition.source === "custom"
+                            ? condition.definitionReviewed
+                              ? "mapped"
+                              : "unreviewed mapping"
+                            : "built-in"}
+                        </span>
+                      </div>
+                      <dl className="mt-2 grid gap-2 text-xs sm:grid-cols-2">
+                        <div>
+                          <dt className="text-muted-foreground">Formula</dt>
+                          <dd className="break-words font-mono text-foreground">
+                            {condition.formula ?? "Not stored"}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-muted-foreground">
+                            Indicator parameters
+                          </dt>
+                          <dd className="break-words font-mono text-foreground">
+                            {formatDefinitionParameters(
+                              condition.definitionParameters,
+                            )}
+                          </dd>
+                        </div>
+                      </dl>
+                    </div>
+                  ),
+                )}
+              </div>
+
+              <div
+                className={cn(
+                  "rounded-md border p-3 text-xs leading-relaxed",
+                  pattern.reproductionRecipe.portability === "portable"
+                    ? "border-primary/30 bg-primary/5 text-foreground"
+                    : "border-warning/30 bg-warning/5 text-foreground",
+                )}
+              >
+                <div className="font-semibold">
+                  {pattern.reproductionRecipe.portability === "portable"
+                    ? "Portable recipe"
+                    : pattern.reproductionRecipe.portability ===
+                        "source-settings-required"
+                      ? "Dataset-exact; source settings still required"
+                      : "Incomplete lineage"}
+                </div>
+                <p className="mt-1">
+                  {pattern.reproductionRecipe.portabilityNote}
+                </p>
+                <p className="mt-2">
+                  {pattern.reproductionRecipe.strategyEntryWarning}
+                </p>
+              </div>
+            </div>
+            <Separator />
+          </>
+        ) : null}
+
         {/* ---- Metric breakdown ---- */}
         <div className="flex flex-col gap-2">
           <h3 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
@@ -699,5 +828,14 @@ export function PatternDetailModal({
         </div>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function RecipeFact({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded border border-border bg-muted/20 p-2">
+      <div className="text-[10px] uppercase text-muted-foreground">{label}</div>
+      <div className="mt-0.5 text-xs font-medium text-foreground">{value}</div>
+    </div>
   );
 }

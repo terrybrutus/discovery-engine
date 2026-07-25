@@ -1,4 +1,5 @@
 import { adjustForCosts, selectedExecutionSummary } from "@/lib/costAnalysis";
+import { formatDefinitionParameters } from "@/lib/reproductionRecipe";
 import { summarizeSymbolAttribution } from "@/lib/symbolAttribution";
 import type {
   CrossReferenceResult,
@@ -271,6 +272,43 @@ export function generateReport(
           ],
   };
 
+  // ---- Section: Reproduction Recipes ----
+  const recipeParagraphs = topPatterns.flatMap((pattern, index) => {
+    const recipe = pattern.reproductionRecipe;
+    if (!recipe) return [];
+    const conditions = recipe.conditions
+      .map(
+        (condition, conditionIndex) =>
+          `${conditionIndex + 1}) ${condition.expression}; formula: ${
+            condition.formula ?? "not stored"
+          }; definition: ${
+            condition.definitionName ??
+            (condition.source === "custom"
+              ? "unidentified uploaded field"
+              : "built-in")
+          }; parameters: ${formatDefinitionParameters(
+            condition.definitionParameters,
+          )}`,
+      )
+      .join(" | ");
+    return [
+      `Recipe ${index + 1} — ${pattern.targetDatasetLabel ?? dataset.label ?? dataset.name} (${pattern.targetTimeframe ?? dataset.timeframe}): evaluate after the target observation closes. ${conditions}. Research measurement enters at the signal observation's close and exits at the close ${pattern.horizon} target observations later. ${recipe.overlapRule} ${recipe.portabilityNote} ${recipe.strategyEntryWarning}`,
+    ];
+  });
+  const recipeSection = {
+    id: "reproduction-recipes",
+    title: "Reproduction Recipes",
+    paragraphs:
+      recipeParagraphs.length > 0
+        ? [
+            "These recipes are assembled deterministically from the exact feature lineage used during discovery. AI may explain a mapped definition, but it does not invent formulas, parameters, timing, or thresholds.",
+            ...recipeParagraphs,
+          ]
+        : [
+            "This report predates stored reproduction lineage. Re-run discovery to generate exact condition formulas, timing, and portability warnings.",
+          ],
+  };
+
   // ---- Section: Top Patterns by Direction-Adjusted MFE/MAE Ratio ----
   // Ranks the same discovered patterns by their direction-adjusted MFE/MAE
   // ratio (favorable excursion vs. adverse excursion, signed for direction),
@@ -402,6 +440,7 @@ export function generateReport(
     featuresSection,
     discoverySection,
     topDiscoveriesSection,
+    recipeSection,
     executionSection,
     ratioSection,
     validationSection,

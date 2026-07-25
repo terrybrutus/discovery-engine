@@ -1,4 +1,5 @@
 import type { FeatureOverrides } from "@/lib/features";
+import { buildReproductionRecipe } from "@/lib/reproductionRecipe";
 import type {
   Condition,
   Confidence,
@@ -1565,6 +1566,11 @@ async function evaluateAllPatterns(
                   bars,
                   result.matches,
                   result.metrics.direction,
+                  horizon,
+                ),
+                reproductionRecipe: buildReproductionRecipe(
+                  conds,
+                  features,
                   horizon,
                 ),
               });

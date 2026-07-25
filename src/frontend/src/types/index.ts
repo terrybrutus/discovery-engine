@@ -207,6 +207,11 @@ export interface Feature {
   definitionId?: string;
   role?: IndicatorRole;
   primitive?: RelationshipPrimitive;
+  /** Snapshot of the definition identity used when this feature was generated. */
+  definitionName?: string;
+  definitionParameters?: Record<string, string | number | boolean>;
+  definitionConfidence?: number;
+  definitionReviewed?: boolean;
 }
 
 /** A single computed value for one bar / one feature. */
@@ -261,6 +266,36 @@ export interface ExecutionComparison {
   nonOverlapping: TradeOutcomeSummary;
 }
 
+export interface ReproductionCondition {
+  featureId: string;
+  featureName: string;
+  /** Exact condition, including the discovered threshold or state. */
+  expression: string;
+  /** Deterministic transformation used to create the feature. */
+  formula?: string;
+  description?: string;
+  source: "builtin" | "custom";
+  definitionId?: string;
+  definitionName?: string;
+  definitionParameters?: Record<string, string | number | boolean>;
+  definitionConfidence?: number;
+  definitionReviewed?: boolean;
+  primitive?: RelationshipPrimitive;
+  originDatasetId?: string;
+  originTimeframe?: Timeframe;
+}
+
+export interface ReproductionRecipe {
+  conditions: ReproductionCondition[];
+  signalTiming: string;
+  researchEntry: string;
+  researchExit: string;
+  strategyEntryWarning: string;
+  overlapRule: string;
+  portability: "portable" | "source-settings-required" | "incomplete";
+  portabilityNote: string;
+}
+
 export interface Pattern {
   id: string;
   /** Dataset whose future bars supplied this pattern's outcomes. */
@@ -297,6 +332,8 @@ export interface Pattern {
   outcomeProfile?: OutcomeProfile;
   /** Statistical occurrences compared with a one-position-at-a-time interpretation. */
   executionComparison?: ExecutionComparison;
+  /** Frozen calculation lineage needed to understand and reproduce the signal. */
+  reproductionRecipe?: ReproductionRecipe;
   /** Family-wise false-discovery estimate from all combinations tested. */
   falseDiscoveryRate?: number;
 }
