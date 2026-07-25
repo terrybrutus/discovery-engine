@@ -25,6 +25,173 @@ export interface PatternInterpretation {
   };
 }
 
+type JsonRecord = Record<string, unknown>;
+
+function isRecord(value: unknown): value is JsonRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function responseSchema() {
+  return {
+    type: "OBJECT",
+    properties: {
+      overview: { type: "STRING" },
+      strongestCandidates: {
+        type: "ARRAY",
+        items: {
+          type: "OBJECT",
+          properties: {
+            patternId: { type: "STRING" },
+            setupNarrative: { type: "STRING" },
+            whyItMayMatter: { type: "STRING" },
+            statisticalConcerns: {
+              type: "ARRAY",
+              items: { type: "STRING" },
+            },
+            nextBacktest: { type: "STRING" },
+          },
+          required: [
+            "patternId",
+            "setupNarrative",
+            "whyItMayMatter",
+            "statisticalConcerns",
+            "nextBacktest",
+          ],
+        },
+      },
+      rejectedOrWeak: {
+        type: "ARRAY",
+        items: {
+          type: "OBJECT",
+          properties: {
+            patternId: { type: "STRING" },
+            reason: { type: "STRING" },
+          },
+          required: ["patternId", "reason"],
+        },
+      },
+    },
+    required: ["overview", "strongestCandidates", "rejectedOrWeak"],
+  };
+}
+
+function firstString(record: JsonRecord, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string") return value;
+  }
+  return undefined;
+}
+
+function firstArray(record: JsonRecord, keys: string[]): unknown[] | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (Array.isArray(value)) return value;
+  }
+  return undefined;
+}
+
+function normalizeInterpretation(
+  text: string,
+): Omit<PatternInterpretation, "usage"> {
+  const decoded = JSON.parse(text) as unknown;
+  if (!isRecord(decoded)) {
+    throw new Error("Gemini returned a report in an unsupported JSON format.");
+  }
+
+  // The enforced schema should produce the top-level form. These wrapper
+  // fallbacks keep otherwise valid responses usable if a model version wraps
+  // the report or changes only casing/naming.
+  const possibleRoots: JsonRecord[] = [decoded];
+  for (const key of ["interpretation", "report", "result"]) {
+    const value = decoded[key];
+    if (isRecord(value)) possibleRoots.push(value);
+  }
+  const root =
+    possibleRoots.find(
+      (candidate) =>
+        firstString(candidate, ["overview", "summary"]) !== undefined &&
+        firstArray(candidate, [
+          "strongestCandidates",
+          "strongest_candidates",
+          "strongestPatterns",
+          "candidates",
+        ]) !== undefined,
+    ) ?? decoded;
+
+  const overview = firstString(root, ["overview", "summary"]);
+  const strongest = firstArray(root, [
+    "strongestCandidates",
+    "strongest_candidates",
+    "strongestPatterns",
+    "candidates",
+  ]);
+  const rejected = firstArray(root, [
+    "rejectedOrWeak",
+    "rejected_or_weak",
+    "rejectedCandidates",
+    "weakCandidates",
+  ]);
+  if (
+    overview === undefined ||
+    strongest === undefined ||
+    rejected === undefined
+  ) {
+    throw new Error(
+      "Gemini returned JSON but omitted required report sections. Please retry.",
+    );
+  }
+
+  const strongestCandidates = strongest.flatMap((value) => {
+    if (!isRecord(value)) return [];
+    const patternId = firstString(value, ["patternId", "pattern_id", "id"]);
+    if (!patternId) return [];
+    const rawConcerns =
+      value.statisticalConcerns ?? value.statistical_concerns ?? value.concerns;
+    const statisticalConcerns = Array.isArray(rawConcerns)
+      ? rawConcerns.filter(
+          (concern): concern is string => typeof concern === "string",
+        )
+      : typeof rawConcerns === "string"
+        ? [rawConcerns]
+        : [];
+    return [
+      {
+        patternId,
+        setupNarrative:
+          firstString(value, [
+            "setupNarrative",
+            "setup_narrative",
+            "setup",
+            "summary",
+          ]) ?? "No setup narrative was returned.",
+        whyItMayMatter:
+          firstString(value, [
+            "whyItMayMatter",
+            "why_it_may_matter",
+            "rationale",
+          ]) ?? "No rationale was returned.",
+        statisticalConcerns,
+        nextBacktest:
+          firstString(value, [
+            "nextBacktest",
+            "next_backtest",
+            "nextTest",
+            "recommendation",
+          ]) ?? "Re-test this candidate out of sample.",
+      },
+    ];
+  });
+  const rejectedOrWeak = rejected.flatMap((value) => {
+    if (!isRecord(value)) return [];
+    const patternId = firstString(value, ["patternId", "pattern_id", "id"]);
+    const reason = firstString(value, ["reason", "rationale", "concern"]);
+    return patternId && reason ? [{ patternId, reason }] : [];
+  });
+
+  return { overview, strongestCandidates, rejectedOrWeak };
+}
+
 export function previewInterpretationCost(patterns: Pattern[]): number {
   const inputTokens =
     Math.ceil(JSON.stringify(patterns.slice(0, 20)).length / 4) + 1500;
@@ -98,6 +265,7 @@ export async function interpretPatternsWithGemini(
           temperature: 0.15,
           maxOutputTokens: 8000,
           responseMimeType: "application/json",
+          responseSchema: responseSchema(),
         },
       }),
     },
@@ -117,14 +285,7 @@ export async function interpretPatternsWithGemini(
   };
   const text = payload.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!text) throw new Error("Gemini returned no interpretation.");
-  const parsed = JSON.parse(text) as Omit<PatternInterpretation, "usage">;
-  if (
-    typeof parsed.overview !== "string" ||
-    !Array.isArray(parsed.strongestCandidates) ||
-    !Array.isArray(parsed.rejectedOrWeak)
-  ) {
-    throw new Error("Gemini returned an invalid interpretation structure.");
-  }
+  const parsed = normalizeInterpretation(text);
   const promptTokens =
     payload.usageMetadata?.promptTokenCount ?? Math.ceil(prompt.length / 4);
   const outputTokens =
