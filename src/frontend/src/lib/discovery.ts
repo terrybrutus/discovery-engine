@@ -1,4 +1,8 @@
 import type { FeatureOverrides } from "@/lib/features";
+import {
+  meetsConfluenceRequirement,
+  resolvePatternConfluence,
+} from "@/lib/patternConfluence";
 import { buildReproductionRecipe } from "@/lib/reproductionRecipe";
 import type {
   Condition,
@@ -1166,7 +1170,6 @@ export async function runDiscovery(
       matrix[f.id] != null,
   );
   const enabledFeatures = screenFeatures(availableFeatures, matrix, bars);
-
   const lookups = new Map<string, FeatureLookup>();
   for (const f of enabledFeatures) {
     lookups.set(f.id, { feature: f, values: matrix[f.id] });
@@ -1420,6 +1423,9 @@ async function evaluateAllPatterns(
   const seenMatchSets = new Set<string>();
   const keptMatchSets: number[][] = [];
   const baselines = baselineWinRates(bars, horizon);
+  const minimumConfluenceSources = config.requireCrossSourceConfluence
+    ? Math.max(2, config.minConfluenceSources ?? 2)
+    : 1;
   let tested = 0;
 
   // Yield to the main thread every YIELD_EVERY combinations or every
@@ -1461,6 +1467,14 @@ async function evaluateAllPatterns(
         ci++;
         continue;
       }
+      if (
+        !meetsConfluenceRequirement(conds, features, minimumConfluenceSources)
+      ) {
+        tested++;
+        ci++;
+        continue;
+      }
+      const confluence = resolvePatternConfluence(conds, features);
 
       const result = evaluatePattern(
         bars,
@@ -1573,6 +1587,8 @@ async function evaluateAllPatterns(
                   features,
                   horizon,
                 ),
+                confluenceDatasetIds: confluence.datasetIds,
+                confluenceTimeframes: confluence.timeframes,
               });
             }
           }

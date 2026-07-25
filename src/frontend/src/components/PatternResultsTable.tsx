@@ -355,6 +355,12 @@ export function PatternResultsTable({
                           · degraded OOS
                         </span>
                       ) : null}
+                      {(p.confluenceDatasetIds?.length ?? 0) > 1 ? (
+                        <span className="text-[10px] font-mono text-primary">
+                          · confluence {p.confluenceDatasetIds?.length} sources
+                          / {p.confluenceTimeframes?.length ?? 0} timeframes
+                        </span>
+                      ) : null}
                     </span>
                   </div>
                 </TableCell>

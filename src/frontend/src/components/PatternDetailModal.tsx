@@ -401,6 +401,10 @@ export function PatternDetailModal({
                   label="Research exit"
                   value={`${pattern.horizon} target observations later, at close`}
                 />
+                <RecipeFact
+                  label="Confluence"
+                  value={`${pattern.confluenceDatasetIds?.length ?? 1} source dataset${(pattern.confluenceDatasetIds?.length ?? 1) === 1 ? "" : "s"} · ${pattern.confluenceTimeframes?.join(", ") || pattern.targetTimeframe || "unknown timeframe"}`}
+                />
               </div>
 
               <div className="space-y-2">

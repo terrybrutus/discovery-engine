@@ -334,6 +334,9 @@ export interface Pattern {
   executionComparison?: ExecutionComparison;
   /** Frozen calculation lineage needed to understand and reproduce the signal. */
   reproductionRecipe?: ReproductionRecipe;
+  /** Source datasets/timeframes whose conditions jointly define this pattern. */
+  confluenceDatasetIds?: string[];
+  confluenceTimeframes?: Timeframe[];
   /** Family-wise false-discovery estimate from all combinations tested. */
   falseDiscoveryRate?: number;
 }
@@ -506,6 +509,10 @@ export interface DiscoveryConfig {
   minGrossCostMultiple?: number;
   /** Which occurrence interpretation drives the economic screen. */
   executionView?: "every-match" | "non-overlapping";
+  /** Require a pattern to combine independently aligned source datasets. */
+  requireCrossSourceConfluence?: boolean;
+  /** Minimum distinct source datasets represented by a pattern. */
+  minConfluenceSources?: number;
 }
 
 export interface DiscoveryProgress {

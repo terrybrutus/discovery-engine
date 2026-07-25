@@ -25,7 +25,7 @@ function instrumentKey(dataset: Dataset): string {
       .toLowerCase()
       .replace(/\.(csv|txt|md)$/g, "")
       .replace(
-        /(?:^|[\s_.-])(?:1m|3m|5m|15m|30m|1h|4h|1d|1w|60|240)(?=$|[\s_.-])/g,
+        /(?:^|[\s_.-])(?:\d+(?:m|h|d|w)|daily|weekly)(?=$|[\s_.-])/g,
         " ",
       )
       .replace(/[^a-z0-9]+/g, "_")

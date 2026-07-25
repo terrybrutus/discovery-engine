@@ -63,6 +63,8 @@ const DEFAULT_CONFIG: DiscoveryConfig = {
   minNetMovePct: 0,
   minGrossCostMultiple: 3,
   executionView: "non-overlapping",
+  requireCrossSourceConfluence: true,
+  minConfluenceSources: 2,
 };
 
 const DEFAULT_PROGRESS: DiscoveryProgress = {
@@ -849,7 +851,12 @@ export const useEngineStore = create<EngineState>((set, get) => ({
           discoveryBars,
           research.features,
           discoveryMatrix,
-          { ...discoveryConfig, maxCombinations: budgetPerTarget },
+          {
+            ...discoveryConfig,
+            maxCombinations: budgetPerTarget,
+            requireCrossSourceConfluence: selectedDatasets.length > 1,
+            minConfluenceSources: Math.min(2, selectedDatasets.length),
+          },
           (progress) => {
             set({
               discoveryProgress: {

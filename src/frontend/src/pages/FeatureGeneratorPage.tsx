@@ -215,63 +215,69 @@ export default function FeatureGeneratorPage() {
       className="flex flex-col gap-6 px-4 py-6 md:px-6"
     >
       {targetMode === "all" ? (
-        <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <div className="rounded-lg border border-border bg-card p-4">
-            <Files className="mb-2 size-4 text-primary" aria-hidden="true" />
-            <div className="font-mono text-lg text-foreground">
-              {universe.datasets.length}
+        <>
+          <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <div className="rounded-lg border border-border bg-card p-4">
+              <Files className="mb-2 size-4 text-primary" aria-hidden="true" />
+              <div className="font-mono text-lg text-foreground">
+                {universe.datasets.length}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                included source files
+              </div>
             </div>
-            <div className="text-xs text-muted-foreground">
-              included source files
+            <div className="rounded-lg border border-border bg-card p-4">
+              <Database
+                className="mb-2 size-4 text-primary"
+                aria-hidden="true"
+              />
+              <div className="font-mono text-lg text-foreground">
+                {universe.totalRows.toLocaleString()}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                observations in the research universe
+              </div>
             </div>
-          </div>
-          <div className="rounded-lg border border-border bg-card p-4">
-            <Database className="mb-2 size-4 text-primary" aria-hidden="true" />
-            <div className="font-mono text-lg text-foreground">
-              {universe.totalRows.toLocaleString()}
+            <div className="rounded-lg border border-border bg-card p-4">
+              <GitBranch
+                className="mb-2 size-4 text-primary"
+                aria-hidden="true"
+              />
+              <div className="font-mono text-lg text-foreground">
+                {universe.instruments.length} · {universe.hierarchyLinks}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                instruments · timeframe hierarchy links
+              </div>
             </div>
-            <div className="text-xs text-muted-foreground">
-              observations in the research universe
+            <div className="rounded-lg border border-border bg-card p-4">
+              <Braces className="mb-2 size-4 text-primary" aria-hidden="true" />
+              <div className="font-mono text-lg text-foreground">
+                {universe.inputColumns.length}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                unique uploaded fields
+              </div>
             </div>
-          </div>
-          <div className="rounded-lg border border-border bg-card p-4">
-            <GitBranch
-              className="mb-2 size-4 text-primary"
-              aria-hidden="true"
-            />
-            <div className="font-mono text-lg text-foreground">
-              {universe.instruments.length} · {universe.hierarchyLinks}
+            <div className="rounded-lg border border-border bg-card p-4 sm:col-span-2 xl:col-span-4">
+              <div className="mb-2 text-xs font-medium uppercase tracking-wide text-foreground">
+                Canonical hierarchy
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {universe.instruments.map((instrument) => (
+                  <span
+                    key={instrument.instrumentKey}
+                    className="rounded border border-border bg-background px-2 py-1 font-mono text-xs text-muted-foreground"
+                  >
+                    {instrument.instrumentKey}:{" "}
+                    {instrument.timeframeLabels.join(" → ")}
+                  </span>
+                ))}
+              </div>
             </div>
-            <div className="text-xs text-muted-foreground">
-              instruments · timeframe hierarchy links
-            </div>
-          </div>
-          <div className="rounded-lg border border-border bg-card p-4">
-            <Braces className="mb-2 size-4 text-primary" aria-hidden="true" />
-            <div className="font-mono text-lg text-foreground">
-              {universe.inputColumns.length}
-            </div>
-            <div className="text-xs text-muted-foreground">
-              unique uploaded fields
-            </div>
-          </div>
-          <div className="rounded-lg border border-border bg-card p-4 sm:col-span-2 xl:col-span-4">
-            <div className="mb-2 text-xs font-medium uppercase tracking-wide text-foreground">
-              Canonical hierarchy
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {universe.instruments.map((instrument) => (
-                <span
-                  key={instrument.instrumentKey}
-                  className="rounded border border-border bg-background px-2 py-1 font-mono text-xs text-muted-foreground"
-                >
-                  {instrument.instrumentKey}:{" "}
-                  {instrument.timeframeLabels.join(" → ")}
-                </span>
-              ))}
-            </div>
-          </div>
-        </section>
+          </section>
+          <CausalAlignmentAudit datasets={includedDatasets} />
+        </>
       ) : (
         <section
           data-ocid="page.feature_generator.data_preview_section"
@@ -384,3 +390,4 @@ export default function FeatureGeneratorPage() {
     </div>
   );
 }
+import { CausalAlignmentAudit } from "@/components/CausalAlignmentAudit";

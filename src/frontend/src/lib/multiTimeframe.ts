@@ -64,7 +64,7 @@ function contextPrefix(dataset: Dataset): string {
   return `mtf__${dataset.id.replace(/[^a-zA-Z0-9_]/g, "_")}__`;
 }
 
-function completedSourceIndexByTarget(
+export function completedSourceIndexByTarget(
   target: Dataset,
   source: Dataset,
 ): number[] {
@@ -234,6 +234,242 @@ function addDevelopingHigherTimeframeFeatures(
   );
 }
 
+function addCompletedLowerTimeframePathFeatures(
+  target: Dataset,
+  source: Dataset,
+  features: Feature[],
+  matrix: FeatureMatrix,
+  prefix: string,
+): void {
+  const targetInterval = datasetIntervalMs(target);
+  const sourceInterval = datasetIntervalMs(source);
+  if (
+    sourceInterval >= targetInterval ||
+    target.instrumentKey !== source.instrumentKey
+  ) {
+    return;
+  }
+
+  const expectedCount = Math.max(
+    1,
+    Math.round(targetInterval / sourceInterval),
+  );
+  const coverage: (number | undefined)[] = [];
+  const highLowOrder: (string | undefined)[] = [];
+  const sweepOrder: (string | undefined)[] = [];
+  const efficiency: (number | undefined)[] = [];
+  const directionChanges: (number | undefined)[] = [];
+  const upExcursion: (number | undefined)[] = [];
+  const downExcursion: (number | undefined)[] = [];
+  let sourceStartIndex = 0;
+
+  for (let targetIndex = 0; targetIndex < target.bars.length; targetIndex++) {
+    const targetBar = target.bars[targetIndex];
+    const targetStart = targetBar.timestamp;
+    const targetEnd = targetStart + targetInterval;
+    while (
+      sourceStartIndex < source.bars.length &&
+      source.bars[sourceStartIndex].timestamp + sourceInterval <= targetStart
+    ) {
+      sourceStartIndex++;
+    }
+    const intrabars: Dataset["bars"] = [];
+    for (
+      let sourceIndex = sourceStartIndex;
+      sourceIndex < source.bars.length;
+      sourceIndex++
+    ) {
+      const sourceBar = source.bars[sourceIndex];
+      if (sourceBar.timestamp >= targetEnd) break;
+      if (
+        sourceBar.timestamp >= targetStart &&
+        sourceBar.timestamp + sourceInterval <= targetEnd
+      ) {
+        intrabars.push(sourceBar);
+      }
+    }
+    if (intrabars.length === 0) {
+      coverage.push(undefined);
+      highLowOrder.push(undefined);
+      sweepOrder.push(undefined);
+      efficiency.push(undefined);
+      directionChanges.push(undefined);
+      upExcursion.push(undefined);
+      downExcursion.push(undefined);
+      continue;
+    }
+
+    coverage.push(Math.min(100, (intrabars.length / expectedCount) * 100));
+    let highestIndex = 0;
+    let lowestIndex = 0;
+    let highest = intrabars[0].high;
+    let lowest = intrabars[0].low;
+    let pathDistance = Math.abs(intrabars[0].close - intrabars[0].open);
+    let changes = 0;
+    let previousDirection = Math.sign(intrabars[0].close - intrabars[0].open);
+    for (let index = 1; index < intrabars.length; index++) {
+      const bar = intrabars[index];
+      if (bar.high > highest) {
+        highest = bar.high;
+        highestIndex = index;
+      }
+      if (bar.low < lowest) {
+        lowest = bar.low;
+        lowestIndex = index;
+      }
+      pathDistance += Math.abs(bar.close - intrabars[index - 1].close);
+      const direction = Math.sign(bar.close - intrabars[index - 1].close);
+      if (
+        direction !== 0 &&
+        previousDirection !== 0 &&
+        direction !== previousDirection
+      ) {
+        changes++;
+      }
+      if (direction !== 0) previousDirection = direction;
+    }
+    highLowOrder.push(
+      highestIndex === lowestIndex
+        ? "High and low in same intrabar"
+        : highestIndex < lowestIndex
+          ? "High before low"
+          : "Low before high",
+    );
+
+    const previousTarget =
+      targetIndex > 0 ? target.bars[targetIndex - 1] : undefined;
+    let firstHighSweep = -1;
+    let firstLowSweep = -1;
+    if (previousTarget) {
+      for (let index = 0; index < intrabars.length; index++) {
+        if (firstHighSweep < 0 && intrabars[index].high > previousTarget.high) {
+          firstHighSweep = index;
+        }
+        if (firstLowSweep < 0 && intrabars[index].low < previousTarget.low) {
+          firstLowSweep = index;
+        }
+      }
+    }
+    sweepOrder.push(
+      firstHighSweep >= 0 && firstLowSweep >= 0
+        ? firstHighSweep === firstLowSweep
+          ? "Both swept in same intrabar"
+          : firstHighSweep < firstLowSweep
+            ? "Prior high swept before prior low"
+            : "Prior low swept before prior high"
+        : firstHighSweep >= 0
+          ? "Prior high swept only"
+          : firstLowSweep >= 0
+            ? "Prior low swept only"
+            : "No prior-range sweep",
+    );
+    const firstOpen = intrabars[0].open;
+    const lastClose = intrabars[intrabars.length - 1].close;
+    const scale = Math.max(Math.abs(firstOpen), 1e-9);
+    efficiency.push(
+      pathDistance > 0
+        ? (Math.abs(lastClose - firstOpen) / pathDistance) * 100
+        : 0,
+    );
+    directionChanges.push(changes);
+    upExcursion.push(((highest - firstOpen) / scale) * 100);
+    downExcursion.push(((firstOpen - lowest) / scale) * 100);
+  }
+
+  const sourceLabel = source.label ?? source.name;
+  const add = (
+    suffix: string,
+    name: string,
+    description: string,
+    type: Feature["type"],
+    values: FeatureMatrix[string],
+    formula: string,
+    buckets?: string[],
+  ) => {
+    const id = `${prefix}intrabar_${suffix}`;
+    features.push({
+      id,
+      name: `[${source.timeframe} · ${sourceLabel}] Intrabar ${name}`,
+      category: "Multi-Timeframe",
+      description,
+      type,
+      enabled: true,
+      source: "builtin",
+      semantic: "multi-timeframe",
+      originDatasetId: source.id,
+      originTimeframe: source.timeframe,
+      formula,
+      buckets,
+    });
+    matrix[id] = values;
+  };
+  add(
+    "coverage",
+    "Coverage %",
+    `Share of the expected ${source.timeframe} bars fully contained inside each completed ${target.timeframe} target bar.`,
+    "numeric",
+    coverage,
+    `completed ${source.timeframe} intrabar count / expected count (${expectedCount}) * 100`,
+  );
+  add(
+    "high_low_order",
+    "High / Low Order",
+    `Whether the final high or low of each ${target.timeframe} bar formed first on ${source.timeframe}.`,
+    "categorical",
+    highLowOrder,
+    `timestamp order of max(high) and min(low) across contained ${source.timeframe} bars`,
+    ["High before low", "Low before high", "High and low in same intrabar"],
+  );
+  add(
+    "prior_range_sweep_order",
+    "Prior Range Sweep Order",
+    `Chronological order in which contained ${source.timeframe} bars swept the previous ${target.timeframe} high and low.`,
+    "categorical",
+    sweepOrder,
+    `first contained ${source.timeframe} high > previous ${target.timeframe} high compared with first low < previous low`,
+    [
+      "No prior-range sweep",
+      "Prior high swept only",
+      "Prior low swept only",
+      "Prior high swept before prior low",
+      "Prior low swept before prior high",
+      "Both swept in same intrabar",
+    ],
+  );
+  add(
+    "path_efficiency",
+    "Path Efficiency %",
+    "Net movement divided by total intrabar close-to-close travel; high values are directional and low values are choppy.",
+    "numeric",
+    efficiency,
+    `abs(last ${source.timeframe} close - first open) / sum(abs(intrabar close changes)) * 100`,
+  );
+  add(
+    "direction_changes",
+    "Direction Changes",
+    `Number of direction reversals inside the completed ${target.timeframe} bar at ${source.timeframe} resolution.`,
+    "numeric",
+    directionChanges,
+    `count(sign change of consecutive ${source.timeframe} close changes)`,
+  );
+  add(
+    "up_excursion_pct",
+    "Up Excursion %",
+    `Maximum upward excursion from the first contained ${source.timeframe} open.`,
+    "numeric",
+    upExcursion,
+    "(max contained high - first open) / abs(first open) * 100",
+  );
+  add(
+    "down_excursion_pct",
+    "Down Excursion %",
+    `Maximum downward excursion from the first contained ${source.timeframe} open.`,
+    "numeric",
+    downExcursion,
+    "(first open - min contained low) / abs(first open) * 100",
+  );
+}
+
 export interface ResearchSpace {
   features: Feature[];
   matrix: FeatureMatrix;
@@ -253,7 +489,13 @@ export function buildMultiTimeframeResearchSpace(
   matricesByDataset: Record<string, FeatureMatrix>,
   discoveryTargetId: string = target.id,
 ): ResearchSpace {
-  const targetFeatures = featuresByDataset[target.id] ?? [];
+  const targetFeatures = (featuresByDataset[target.id] ?? []).map(
+    (feature) => ({
+      ...feature,
+      originDatasetId: target.id,
+      originTimeframe: target.timeframe,
+    }),
+  );
   const targetMatrix = matricesByDataset[target.id] ?? {};
   const features: Feature[] = [...targetFeatures];
   const matrix: FeatureMatrix = { ...targetMatrix };
@@ -294,6 +536,13 @@ export function buildMultiTimeframeResearchSpace(
         target,
         source,
         alignedIndices,
+        features,
+        matrix,
+        prefix,
+      );
+      addCompletedLowerTimeframePathFeatures(
+        target,
+        source,
         features,
         matrix,
         prefix,

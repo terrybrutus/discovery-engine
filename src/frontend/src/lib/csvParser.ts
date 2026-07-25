@@ -127,14 +127,34 @@ function inferTimeframe(intervalMs: number): Timeframe {
   return "unknown";
 }
 
-function inferInstrumentKey(name: string): string {
+function inferInstrumentKey(name: string, intervalMs: number): string {
   const withoutExtension = name.replace(/\.(csv|txt|md)$/i, "");
+  const intervalMinutes = Math.max(1, Math.round(intervalMs / 60_000));
+  const measuredTokens = [
+    String(intervalMinutes),
+    `${intervalMinutes}m`,
+    intervalMinutes % 60 === 0 ? `${intervalMinutes / 60}h` : "",
+    intervalMinutes % (24 * 60) === 0 ? `${intervalMinutes / (24 * 60)}d` : "",
+    intervalMinutes % (7 * 24 * 60) === 0
+      ? `${intervalMinutes / (7 * 24 * 60)}w`
+      : "",
+  ].filter(Boolean);
+  const measuredPattern = measuredTokens
+    .map((token) => token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|");
   const withoutTimeframe = withoutExtension
+    .replace(/\s*\(\d+\)$/g, " ")
     .replace(
-      /(?:^|[\s_.-])(?:(?:\d+)(?:m|h|d|w)|60|240|daily|weekly)(?=$|[\s_.-])/gi,
+      new RegExp(
+        `(?:^|[\\s_.-])(?:${measuredPattern}|daily|weekly)(?=$|[\\s_.-])`,
+        "gi",
+      ),
       " ",
     )
-    .replace(/\(\d+\)$/g, " ");
+    .replace(
+      /(?:^|[\s_.-])(?:\d+(?:m|h|d|w)|daily|weekly)(?=$|[\s_.-])/gi,
+      " ",
+    );
   return (
     normalizeHeader(withoutTimeframe).replace(/^(?:\d+_)+/, "") ||
     normalizeHeader(withoutExtension) ||
@@ -364,7 +384,7 @@ function buildDatasetFromRows(rows: string[][], name: string): ParseResult {
       columnValues,
       timeframe: inferTimeframe(intervalMs),
       intervalMs,
-      instrumentKey: inferInstrumentKey(name),
+      instrumentKey: inferInstrumentKey(name, intervalMs),
       hasOHLC,
       hasVolume,
       outcomeColumnKey: outcomeColumn.key,
