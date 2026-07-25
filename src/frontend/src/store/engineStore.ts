@@ -24,6 +24,11 @@ import {
   VALIDATION_COHORT_LIMIT,
   validationHeldUp,
 } from "@/lib/validationPolicy";
+import {
+  clearWorkspaceCheckpoint,
+  loadWorkspaceCheckpoint,
+  saveWorkspaceCheckpoint,
+} from "@/lib/workspaceRecovery";
 import { BUILTIN_CATEGORIES } from "@/types";
 import type {
   CompletedStep,
@@ -126,6 +131,8 @@ interface EngineState {
   completedSteps: CompletedSteps;
   isComputing: boolean;
   lastError: string | null;
+  recoveryChecked: boolean;
+  recoveryMessage: string | null;
 
   // ---- Feature overrides ----
   featureOverrides: FeatureOverrides;
@@ -176,6 +183,8 @@ interface EngineState {
   updateConfig: (patch: Partial<DiscoveryConfig>) => void;
   cancelDiscovery: () => void;
   resetSession: () => void;
+  restoreRecoveryAction: () => Promise<void>;
+  clearRecoveryNotice: () => void;
 }
 
 /**
@@ -477,6 +486,8 @@ export const useEngineStore = create<EngineState>((set, get) => ({
   completedSteps: new Set<CompletedStep>(),
   isComputing: false,
   lastError: null,
+  recoveryChecked: false,
+  recoveryMessage: null,
 
   featureOverrides: {},
   savedRuns: [],
@@ -1211,10 +1222,105 @@ export const useEngineStore = create<EngineState>((set, get) => ({
       completedSteps: new Set<CompletedStep>(),
       isComputing: false,
       lastError: null,
+      recoveryMessage: null,
     });
     // No sample dataset is force-loaded here. The user must explicitly load
     // data via the Data Intake panel (per user preference).
   },
+
+  restoreRecoveryAction: async () => {
+    if (get().recoveryChecked) return;
+    try {
+      const checkpoint = await loadWorkspaceCheckpoint();
+      if (!checkpoint || checkpoint.datasets.length === 0) {
+        set({ recoveryChecked: true });
+        return;
+      }
+      // Startup recovery must never overwrite a dataset the user already
+      // loaded while IndexedDB was opening.
+      if (get().datasets.length > 0) {
+        set({ recoveryChecked: true });
+        return;
+      }
+      const activeDataset =
+        checkpoint.datasets.find(
+          (candidate) => candidate.id === checkpoint.activeDatasetId,
+        ) ??
+        checkpoint.datasets[0] ??
+        null;
+      const selectedDatasetIds = checkpoint.selectedDatasetIds.filter((id) =>
+        checkpoint.datasets.some((dataset) => dataset.id === id),
+      );
+      const included = checkpoint.datasets.filter((candidate) =>
+        selectedDatasetIds.includes(candidate.id),
+      );
+      if (
+        checkpoint.targetMode === "single" &&
+        activeDataset &&
+        !included.some((candidate) => candidate.id === activeDataset.id)
+      ) {
+        included.unshift(activeDataset);
+      }
+      if (included.length === 0 && activeDataset) included.push(activeDataset);
+      const featuresByDataset: Record<string, Feature[]> = {};
+      const featureValuesByDataset: Record<string, FeatureMatrix> = {};
+      for (const candidate of included) {
+        const generated = buildDatasetFeatures(
+          candidate,
+          checkpoint.featureOverrides as FeatureOverrides,
+        );
+        featuresByDataset[candidate.id] = generated.features;
+        featureValuesByDataset[candidate.id] = generated.matrix;
+      }
+      const completedSteps = new Set<CompletedStep>(checkpoint.completedSteps);
+      if (checkpoint.patterns.length === 0) {
+        completedSteps.clear();
+        completedSteps.add("dataLoaded");
+        completedSteps.add("featuresGenerated");
+      }
+      set({
+        datasets: checkpoint.datasets,
+        dataset: activeDataset,
+        activeDatasetId: activeDataset?.id ?? null,
+        selectedDatasetIds,
+        targetMode: checkpoint.targetMode,
+        discoveryConfig: checkpoint.discoveryConfig,
+        featureOverrides: checkpoint.featureOverrides as FeatureOverrides,
+        features: activeDataset
+          ? (featuresByDataset[activeDataset.id] ?? [])
+          : [],
+        featureValues: activeDataset
+          ? (featureValuesByDataset[activeDataset.id] ?? null)
+          : null,
+        featuresByDataset,
+        featureValuesByDataset,
+        researchFeatures: [],
+        researchFeatureValues: null,
+        researchContextDatasetIds: [],
+        researchTotalBars: checkpoint.datasets.reduce(
+          (sum, candidate) => sum + candidate.rowCount,
+          0,
+        ),
+        patterns: checkpoint.patterns,
+        validationResults: checkpoint.validationResults,
+        discoverySearchAudits: checkpoint.discoverySearchAudits,
+        crossReferenceResults: checkpoint.crossReferenceResults,
+        report: checkpoint.report,
+        completedSteps,
+        activeTab:
+          checkpoint.patterns.length > 0 ? checkpoint.activeTab : "features",
+        recoveryChecked: true,
+        recoveryMessage: `Recovered ${checkpoint.datasets.length} local dataset${
+          checkpoint.datasets.length === 1 ? "" : "s"
+        } from ${new Date(checkpoint.savedAt).toLocaleString()}.`,
+        lastError: null,
+      });
+    } catch {
+      set({ recoveryChecked: true });
+    }
+  },
+
+  clearRecoveryNotice: () => set({ recoveryMessage: null }),
 
   // ---- Feature override actions ----
   setFeatureOverride: (featureId, override) =>
@@ -1503,3 +1609,52 @@ export const useEngineStore = create<EngineState>((set, get) => ({
 
 // No module-init sample-dataset preload. The app starts on an empty state
 // and the user loads data explicitly via the Data Intake panel.
+let recoveryTimer: ReturnType<typeof setTimeout> | null = null;
+const flushRecoveryCheckpoint = () => {
+  const latest = useEngineStore.getState();
+  if (latest.isComputing) {
+    recoveryTimer = setTimeout(flushRecoveryCheckpoint, 1_500);
+    return;
+  }
+  if (latest.datasets.length === 0) {
+    void clearWorkspaceCheckpoint().catch(() => undefined);
+    return;
+  }
+  void saveWorkspaceCheckpoint({
+    version: 1,
+    savedAt: Date.now(),
+    datasets: latest.datasets,
+    activeDatasetId: latest.activeDatasetId,
+    selectedDatasetIds: latest.selectedDatasetIds,
+    targetMode: latest.targetMode,
+    discoveryConfig: latest.discoveryConfig,
+    featureOverrides: latest.featureOverrides,
+    patterns: latest.patterns,
+    validationResults: latest.validationResults,
+    discoverySearchAudits: latest.discoverySearchAudits,
+    crossReferenceResults: latest.crossReferenceResults,
+    report: latest.report,
+    completedSteps: [...latest.completedSteps],
+    activeTab: latest.activeTab,
+  }).catch(() => undefined);
+};
+
+useEngineStore.subscribe((state, previous) => {
+  if (!state.recoveryChecked || state.isComputing) return;
+  const changed =
+    state.datasets !== previous.datasets ||
+    state.activeDatasetId !== previous.activeDatasetId ||
+    state.selectedDatasetIds !== previous.selectedDatasetIds ||
+    state.targetMode !== previous.targetMode ||
+    state.discoveryConfig !== previous.discoveryConfig ||
+    state.featureOverrides !== previous.featureOverrides ||
+    state.patterns !== previous.patterns ||
+    state.validationResults !== previous.validationResults ||
+    state.discoverySearchAudits !== previous.discoverySearchAudits ||
+    state.crossReferenceResults !== previous.crossReferenceResults ||
+    state.report !== previous.report ||
+    state.completedSteps !== previous.completedSteps;
+  if (!changed) return;
+  if (recoveryTimer) clearTimeout(recoveryTimer);
+  recoveryTimer = setTimeout(flushRecoveryCheckpoint, 1_500);
+});

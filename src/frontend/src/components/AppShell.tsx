@@ -4,7 +4,8 @@ import { TabNavigation } from "@/components/TabNavigation";
 import { Toaster } from "@/components/ui/sonner";
 import { useEngineStore } from "@/store/engineStore";
 import type { TabId } from "@/types";
-import { Suspense, lazy } from "react";
+import { Suspense, lazy, useEffect } from "react";
+import { toast } from "sonner";
 
 // Page components will be created in the next wave. Lazy-load them so this
 // foundation compiles even before the page files exist; the Suspense
@@ -109,6 +110,22 @@ export function AppShell() {
   const activeTab = useEngineStore((s) => s.activeTab);
   const completedSteps = useEngineStore((s) => s.completedSteps);
   const setActiveTab = useEngineStore((s) => s.setActiveTab);
+  const restoreRecoveryAction = useEngineStore((s) => s.restoreRecoveryAction);
+  const recoveryMessage = useEngineStore((s) => s.recoveryMessage);
+  const clearRecoveryNotice = useEngineStore((s) => s.clearRecoveryNotice);
+
+  useEffect(() => {
+    void restoreRecoveryAction();
+  }, [restoreRecoveryAction]);
+
+  useEffect(() => {
+    if (!recoveryMessage) return;
+    toast.success("Local workspace recovered", {
+      description: `${recoveryMessage} Raw rows remained on this device.`,
+      duration: 8_000,
+    });
+    clearRecoveryNotice();
+  }, [clearRecoveryNotice, recoveryMessage]);
 
   return (
     <div

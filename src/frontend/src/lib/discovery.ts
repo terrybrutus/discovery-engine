@@ -210,6 +210,30 @@ interface EvalResult {
   mfeMaeRatio: number;
 }
 
+interface OutcomeCache {
+  returns: Float64Array;
+  upExcursions: Float64Array;
+  downExcursions: Float64Array;
+}
+
+function buildOutcomeCache(
+  bars: OHLCVBar[],
+  horizon: number,
+  mfeMaeWindow: number,
+): OutcomeCache {
+  const returns = new Float64Array(bars.length);
+  const upExcursions = new Float64Array(bars.length);
+  const downExcursions = new Float64Array(bars.length);
+  for (let index = 0; index < bars.length - horizon; index++) {
+    const outcome = measureOutcome(bars, index, horizon, mfeMaeWindow);
+    if (!outcome) continue;
+    returns[index] = outcome.ret;
+    upExcursions[index] = outcome.upExcursion;
+    downExcursions[index] = outcome.downExcursion;
+  }
+  return { returns, upExcursions, downExcursions };
+}
+
 function median(values: number[]): number {
   if (values.length === 0) return 0;
   const sorted = [...values].sort((a, b) => a - b);
@@ -416,6 +440,7 @@ function evaluatePattern(
   lookups: Map<string, FeatureLookup>,
   horizon: number,
   mfeMaeWindow?: number,
+  outcomeCache?: OutcomeCache,
 ): EvalResult | null {
   const matches: number[] = [];
   // Pre-filter: only scan bars where all features are defined.
@@ -435,7 +460,19 @@ function evaluatePattern(
   );
   for (let m = 0; m < matches.length; m++) {
     const idx = matches[m];
-    const o = measureOutcome(bars, idx, horizon, mfeMaeWindow);
+    const o = outcomeCache
+      ? {
+          ret: outcomeCache.returns[idx],
+          upExcursion: outcomeCache.upExcursions[idx],
+          downExcursion: outcomeCache.downExcursions[idx],
+          direction:
+            outcomeCache.returns[idx] > 0
+              ? ("bullish" as const)
+              : outcomeCache.returns[idx] < 0
+                ? ("bearish" as const)
+                : ("neutral" as const),
+        }
+      : measureOutcome(bars, idx, horizon, mfeMaeWindow);
     if (!o) {
       outcomes[m] = { ret: 0, direction: "neutral" };
       continue;
@@ -528,21 +565,14 @@ function everyConditionAddsValue(
   bars: OHLCVBar[],
   conditions: Condition[],
   result: EvalResult,
-  lookups: Map<string, FeatureLookup>,
   horizon: number,
-  mfeMaeWindow: number,
+  evaluateParent: (conditions: Condition[]) => EvalResult | null,
 ): boolean {
   if (conditions.length < 2) return true;
   const minimumIncrementalLift = 0.5;
   for (let omitted = 0; omitted < conditions.length; omitted++) {
     const parentConditions = conditions.filter((_, index) => index !== omitted);
-    const parent = evaluatePattern(
-      bars,
-      parentConditions,
-      lookups,
-      horizon,
-      mfeMaeWindow,
-    );
+    const parent = evaluateParent(parentConditions);
     if (!parent) continue;
     const parentWinRate = winRateForDirection(
       bars,
@@ -574,6 +604,16 @@ function matchSetSimilarity(left: number[], right: number[]): number {
   }
   const union = left.length + right.length - intersection;
   return union > 0 ? intersection / union : 1;
+}
+
+function matchSetSignature(matches: number[]): string {
+  let left = 2166136261;
+  let right = 2246822519;
+  for (const value of matches) {
+    left = Math.imul(left ^ value, 16777619) >>> 0;
+    right = Math.imul(right ^ (value + 0x9e3779b9), 3266489917) >>> 0;
+  }
+  return `${matches.length}:${left.toString(36)}:${right.toString(36)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1642,14 +1682,46 @@ async function evaluateAllPatterns(
     "targetDatasetId" | "targetDatasetLabel" | "targetTimeframe"
   >,
 ): Promise<Pattern[]> {
+  const MAX_RETAINED_PATTERNS = 500;
+  const MAX_NEAR_DUPLICATE_COMPARISONS = 32;
+  const MAX_EVALUATION_CACHE_ENTRIES = 256;
   const patterns: Pattern[] = [];
   const seenMatchSets = new Set<string>();
   const keptMatchSets: number[][] = [];
+  const outcomeCache = buildOutcomeCache(bars, horizon, mfeMaeWindow);
+  const evaluationCache = new Map<string, EvalResult | null>();
   const baselines = baselineWinRates(bars, horizon);
   const minimumConfluenceSources = config.requireCrossSourceConfluence
     ? Math.max(2, config.minConfluenceSources ?? 2)
     : 1;
   let tested = 0;
+  let acceptedCandidates = 0;
+
+  const evaluateCached = (conditions: Condition[]): EvalResult | null => {
+    const key = conditionKey(conditions);
+    if (evaluationCache.has(key)) {
+      const cached = evaluationCache.get(key) ?? null;
+      // Refresh this entry's recency without copying its potentially large
+      // match array.
+      evaluationCache.delete(key);
+      evaluationCache.set(key, cached);
+      return cached;
+    }
+    const result = evaluatePattern(
+      bars,
+      conditions,
+      lookups,
+      horizon,
+      mfeMaeWindow,
+      outcomeCache,
+    );
+    if (evaluationCache.size >= MAX_EVALUATION_CACHE_ENTRIES) {
+      const oldest = evaluationCache.keys().next().value;
+      if (oldest != null) evaluationCache.delete(oldest);
+    }
+    evaluationCache.set(key, result);
+    return result;
+  };
 
   // Yield to the main thread every YIELD_EVERY combinations or every
   // YIELD_INTERVAL_MS, whichever comes first. This keeps the tab responsive
@@ -1683,7 +1755,7 @@ async function evaluateAllPatterns(
       return;
     }
     const confluence = resolvePatternConfluence(conds, features);
-    const result = evaluatePattern(bars, conds, lookups, horizon, mfeMaeWindow);
+    const result = evaluateCached(conds);
     if (!result) {
       if (isPriority && audit) audit.rejected.noOutcome++;
       return;
@@ -1706,14 +1778,7 @@ async function evaluateAllPatterns(
       return;
     }
     if (
-      !everyConditionAddsValue(
-        bars,
-        conds,
-        result,
-        lookups,
-        horizon,
-        mfeMaeWindow,
-      )
+      !everyConditionAddsValue(bars, conds, result, horizon, evaluateCached)
     ) {
       if (isPriority && audit) audit.rejected.redundantCondition++;
       return;
@@ -1725,26 +1790,44 @@ async function evaluateAllPatterns(
       if (isPriority && audit) audit.rejected.weakExcursion++;
       return;
     }
-    const matchSetKey = result.matches.join(",");
-    const isNearDuplicate = keptMatchSets.some(
-      (matches) =>
-        Math.abs(matches.length - result.matches.length) /
-          Math.max(matches.length, result.matches.length) <=
-          0.1 && matchSetSimilarity(matches, result.matches) >= 0.95,
-    );
-    if (seenMatchSets.has(matchSetKey) || isNearDuplicate) {
-      if (isPriority && audit) audit.rejected.duplicatePattern++;
-      return;
-    }
-    seenMatchSets.add(matchSetKey);
-    keptMatchSets.push(result.matches);
     const score = scorePattern(
       result.metrics.winRate,
       result.metrics.sampleSize,
       lift,
     );
-    patterns.push({
-      id: `p_${patterns.length}`,
+    acceptedCandidates++;
+    if (patterns.length >= MAX_RETAINED_PATTERNS) {
+      let lowestScore = Number.POSITIVE_INFINITY;
+      for (const pattern of patterns) {
+        lowestScore = Math.min(lowestScore, pattern.score);
+      }
+      if (score <= lowestScore) return;
+    }
+    const matchSetKey = matchSetSignature(result.matches);
+    const comparable = keptMatchSets.filter(
+      (matches) =>
+        Math.abs(matches.length - result.matches.length) /
+          Math.max(matches.length, result.matches.length) <=
+        0.1,
+    );
+    const comparisonStride = Math.max(
+      1,
+      Math.ceil(comparable.length / MAX_NEAR_DUPLICATE_COMPARISONS),
+    );
+    let isNearDuplicate = false;
+    for (let index = 0; index < comparable.length; index += comparisonStride) {
+      if (matchSetSimilarity(comparable[index], result.matches) >= 0.95) {
+        isNearDuplicate = true;
+        break;
+      }
+    }
+    if (seenMatchSets.has(matchSetKey) || isNearDuplicate) {
+      if (isPriority && audit) audit.rejected.duplicatePattern++;
+      return;
+    }
+    seenMatchSets.add(matchSetKey);
+    const pattern: Pattern = {
+      id: `p_${acceptedCandidates}`,
       searchTier: tier,
       conditions: conds,
       label: patternLabel(conds, features),
@@ -1797,7 +1880,20 @@ async function evaluateAllPatterns(
       reproductionRecipe: buildReproductionRecipe(conds, features, horizon),
       confluenceDatasetIds: confluence.datasetIds,
       confluenceTimeframes: confluence.timeframes,
-    });
+    };
+    if (patterns.length < MAX_RETAINED_PATTERNS) {
+      patterns.push(pattern);
+      keptMatchSets.push(result.matches);
+    } else {
+      let lowestIndex = 0;
+      for (let index = 1; index < patterns.length; index++) {
+        if (patterns[index].score < patterns[lowestIndex].score) {
+          lowestIndex = index;
+        }
+      }
+      patterns[lowestIndex] = pattern;
+      keptMatchSets[lowestIndex] = result.matches;
+    }
     if (isPriority && audit) audit.priorityAccepted++;
   };
 
