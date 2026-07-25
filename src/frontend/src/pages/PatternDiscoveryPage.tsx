@@ -448,9 +448,11 @@ export default function PatternDiscoveryPage() {
                     </span>
                   </div>
                   <div className="flex flex-col">
-                    <span className="text-muted-foreground">Found</span>
+                    <span className="text-muted-foreground">
+                      Candidates found
+                    </span>
                     <span className="font-mono tabular-nums text-primary">
-                      {patterns.length.toLocaleString()}
+                      {(discoveryProgress.found ?? 0).toLocaleString()}
                     </span>
                   </div>
                   <div className="flex flex-col">
@@ -464,7 +466,10 @@ export default function PatternDiscoveryPage() {
                   <div className="flex flex-col col-span-2 sm:col-span-1 min-w-0">
                     <span className="text-muted-foreground">Current</span>
                     <span className="truncate font-mono text-[11px] text-muted-foreground">
-                      {discoveryProgress.current || "Working…"}
+                      {discoveryProgress.targetPassIndex &&
+                      discoveryProgress.targetPassTotal
+                        ? `Target pass ${discoveryProgress.targetPassIndex}/${discoveryProgress.targetPassTotal}: ${discoveryProgress.targetTimeframe} · ${discoveryProgress.targetDatasetLabel} — ${discoveryProgress.current}`
+                        : discoveryProgress.current || "Working…"}
                     </span>
                   </div>
                 </div>

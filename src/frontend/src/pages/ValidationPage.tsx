@@ -5,6 +5,10 @@ import {
 } from "@/components/ValidationBreakdown";
 import { ValidationTable } from "@/components/ValidationTable";
 import { Button } from "@/components/ui/button";
+import {
+  VALIDATION_COHORT_LIMIT,
+  validationHeldUp,
+} from "@/lib/validationPolicy";
 import { useEngineStore } from "@/store/engineStore";
 import type { ValidationResult } from "@/types";
 import {
@@ -21,7 +25,7 @@ import { useState } from "react";
  * patterns hold up on unseen (out-of-sample) data, breaks results down
  * by market condition and year, and flags patterns that degrade.
  *
- * Reads `validationResults`, `patterns`, `config`, and `datasets` from
+ * Reads `validationResults`, `patterns`, and config from
  * the engine store. Runs `validatePatterns` (via `validateAction`)
  * against the current discovery results when the user clicks the
  * validate button.
@@ -30,8 +34,6 @@ export default function ValidationPage() {
   const patterns = useEngineStore((s) => s.patterns);
   const validationResults = useEngineStore((s) => s.validationResults);
   const discoveryConfig = useEngineStore((s) => s.discoveryConfig);
-  const datasets = useEngineStore((s) => s.datasets);
-  const selectedDatasetIds = useEngineStore((s) => s.selectedDatasetIds);
   const isComputing = useEngineStore((s) => s.isComputing);
   const completedSteps = useEngineStore((s) => s.completedSteps);
   const validateAction = useEngineStore((s) => s.validateAction);
@@ -41,8 +43,8 @@ export default function ValidationPage() {
 
   const discoveryComplete = completedSteps.has("discoveryComplete");
   const hasResults = validationResults.length > 0;
-  const heldUpCount = validationResults.filter(
-    (r) => !r.degraded && r.outOfSampleMetrics.sampleSize >= 20,
+  const heldUpCount = validationResults.filter((result) =>
+    validationHeldUp(result),
   ).length;
 
   // No patterns discovered yet — guide the user to the Discovery tab.
@@ -86,13 +88,14 @@ export default function ValidationPage() {
             ) : (
               <Play className="size-4" aria-hidden="true" />
             )}
-            {hasResults ? "Re-run Validation" : "Validate Patterns"}
+            {hasResults ? "Refresh Validation" : "Validate Patterns"}
           </Button>
           <p className="text-sm text-muted-foreground">
-            Automatically tests the top {Math.min(patterns.length, 20)} patterns
-            on a 70/30 chronological split and checks survival across{" "}
-            {selectedDatasetIds.length || datasets.length} selected dataset
-            {(selectedDatasetIds.length || datasets.length) === 1 ? "" : "s"}.
+            Re-tests the same target-balanced{" "}
+            {Math.min(patterns.length, VALIDATION_COHORT_LIMIT)} frozen
+            candidates on the 70/30 chronological split. It does not rediscover
+            patterns; independent symbol and timeframe survival are checked
+            where compatible.
           </p>
         </div>
       </div>

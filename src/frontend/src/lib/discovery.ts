@@ -1597,6 +1597,7 @@ export async function runDiscovery(
   onProgress({
     total: cap,
     tested: cap,
+    found: patterns.length,
     current: "Done.",
     isRunning: false,
     estimatedRemainingMs: 0,
@@ -1829,6 +1830,7 @@ async function evaluateAllPatterns(
           onProgress({
             total: totalCap,
             tested,
+            found: patterns.length,
             current: "Cancelled.",
             isRunning: false,
             estimatedRemainingMs: 0,
@@ -1861,6 +1863,7 @@ async function evaluateAllPatterns(
           onProgress({
             total: totalCap,
             tested,
+            found: patterns.length,
             current:
               stream.tier === "event-priority"
                 ? `Testing structural/event confluence ${ci}/${stream.cap}`

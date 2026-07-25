@@ -1,3 +1,4 @@
+import { validationHeldUp } from "@/lib/validationPolicy";
 import type { Pattern, ValidationResult } from "@/types";
 
 export interface PatternSymbolEntry {
@@ -85,8 +86,8 @@ export function summarizeSymbolAttribution(
       row.weightedWinRate += pattern.winRate * entry.occurrences;
       row.weightedAvgMove += pattern.avgMove * entry.occurrences;
       if (validation) {
-        if (validation.degraded) row.degradedPatterns++;
-        else row.passedPatterns++;
+        if (validationHeldUp(validation)) row.passedPatterns++;
+        else row.degradedPatterns++;
       } else if (pattern.validationStatus === "degraded") {
         row.degradedPatterns++;
       } else if (pattern.validationStatus === "held") {

@@ -35,12 +35,15 @@ export function DegradationBadge({
   degradationThresholdPp = 10,
   className,
 }: DegradationBadgeProps) {
-  const status = resolveStatus(
-    outOfSampleSampleSize,
-    inSampleWinRate - outOfSampleWinRate,
-    minSample,
-    degradationThresholdPp,
-  );
+  const status =
+    outOfSampleSampleSize >= minSample && outOfSampleWinRate <= 50
+      ? "degraded"
+      : resolveStatus(
+          outOfSampleSampleSize,
+          inSampleWinRate - outOfSampleWinRate,
+          minSample,
+          degradationThresholdPp,
+        );
 
   const { Icon, badge } = statusStyles[status];
 
@@ -97,7 +100,8 @@ const statusLabels: Record<DegradationStatus, string> = {
 
 const statusTitles: Record<DegradationStatus, string> = {
   held: "Out-of-sample win rate stayed within 10pp of in-sample.",
-  degraded: "Out-of-sample win rate dropped more than 10pp.",
+  degraded:
+    "Out-of-sample performance failed: win rate was 50% or lower, or dropped more than 10pp.",
   insufficient: "Out-of-sample sample size too small to trust.",
 };
 

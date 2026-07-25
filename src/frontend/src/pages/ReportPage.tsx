@@ -10,6 +10,7 @@ import {
   summarizeSymbolAttribution,
 } from "@/lib/symbolAttribution";
 import { cn } from "@/lib/utils";
+import { validationHeldUp } from "@/lib/validationPolicy";
 import { useEngineStore } from "@/store/engineStore";
 import type { Pattern, TabId, ValidationResult } from "@/types";
 import {
@@ -117,7 +118,9 @@ export default function ReportPage() {
 
   // ---- Aggregate validation summary ----
   const totalValidated = validationResults.length;
-  const passedCount = validationResults.filter((v) => !v.degraded).length;
+  const passedCount = validationResults.filter((result) =>
+    validationHeldUp(result),
+  ).length;
   const passRate =
     totalValidated > 0 ? (passedCount / totalValidated) * 100 : null;
   const validatedRatios = validationResults
@@ -133,6 +136,14 @@ export default function ReportPage() {
   const avgSurvival =
     survivalValues.length > 0
       ? survivalValues.reduce((acc, v) => acc + v, 0) / survivalValues.length
+      : null;
+  const timeframeSurvivalValues = validationResults
+    .map((result) => result.crossTimeframeSurvival ?? null)
+    .filter((value): value is number => value != null);
+  const avgTimeframeSurvival =
+    timeframeSurvivalValues.length > 0
+      ? timeframeSurvivalValues.reduce((sum, value) => sum + value, 0) /
+        timeframeSurvivalValues.length
       : null;
   const symbolAttribution = summarizeSymbolAttribution(
     patterns,
@@ -215,7 +226,7 @@ export default function ReportPage() {
         </div>
 
         {/* Headline metrics */}
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
           <HeadlineMetric
             label="Patterns"
             value={patternCount.toLocaleString()}
@@ -327,6 +338,21 @@ export default function ReportPage() {
               survivalValues.length > 0
                 ? `across ${survivalValues.length} pattern${
                     survivalValues.length === 1 ? "" : "s"
+                  }`
+                : undefined
+            }
+          />
+          <SummaryStat
+            label="Avg Cross-Timeframe Survival"
+            value={
+              avgTimeframeSurvival != null
+                ? `${(avgTimeframeSurvival * 100).toFixed(1)}%`
+                : "—"
+            }
+            hint={
+              timeframeSurvivalValues.length > 0
+                ? `across ${timeframeSurvivalValues.length} pattern${
+                    timeframeSurvivalValues.length === 1 ? "" : "s"
                   }`
                 : undefined
             }
@@ -520,7 +546,7 @@ function PatternTable({
           {patterns.map((p, i) => {
             const v = validationById.get(p.id);
             const ratio = resolveRatio(p, v);
-            const degraded = v?.degraded ?? false;
+            const degraded = v ? !validationHeldUp(v) : false;
             return (
               <tr
                 key={p.id}
@@ -569,7 +595,7 @@ function PatternTable({
                 <Td>
                   {v ? (
                     <span className={degraded ? "degraded" : "surviving"}>
-                      {degraded ? "Degraded" : "Passed"}
+                      {degraded ? "Failed" : "Passed"}
                     </span>
                   ) : (
                     <span className="font-mono text-[11px] text-muted-foreground/60">

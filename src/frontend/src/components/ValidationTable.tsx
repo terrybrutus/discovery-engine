@@ -23,7 +23,8 @@ type SortKey =
   | "outOfSampleWinRate"
   | "degradation"
   | "directionAdjustedMfeMaeRatio"
-  | "crossSymbolSurvival";
+  | "crossSymbolSurvival"
+  | "crossTimeframeSurvival";
 type SortDir = "asc" | "desc";
 
 interface ValidationTableProps {
@@ -131,6 +132,14 @@ export function ValidationTable({
               align="right"
             />
             <SortableHeader
+              label="Cross-TF Survival"
+              sortKey="crossTimeframeSurvival"
+              activeKey={sortKey}
+              dir={sortDir}
+              onClick={() => toggleSort("crossTimeframeSurvival")}
+              align="right"
+            />
+            <SortableHeader
               label="Sample"
               sortKey="outOfSampleWinRate"
               activeKey={sortKey}
@@ -232,6 +241,7 @@ function ValidationRow({
         </TableCell>
         <NumericCell value={formatRatio(r.directionAdjustedMfeMaeRatio)} />
         <NumericCell value={formatSurvival(r.crossSymbolSurvival)} />
+        <NumericCell value={formatSurvival(r.crossTimeframeSurvival ?? null)} />
         <TableCell className="text-right font-mono text-xs tabular-nums text-muted-foreground">
           <span className="text-foreground">
             {r.outOfSampleMetrics.sampleSize}
@@ -254,7 +264,7 @@ function ValidationRow({
           data-ocid={`validation_table.detail.${rank - 1}`}
           className="border-border bg-muted/20 hover:bg-muted/20"
         >
-          <TableCell colSpan={10} className="p-0">
+          <TableCell colSpan={11} className="p-0">
             <ExpandedDetail result={r} />
           </TableCell>
         </TableRow>
@@ -561,6 +571,8 @@ function sortValue(r: ValidationResult, key: SortKey): number {
       return r.directionAdjustedMfeMaeRatio ?? Number.NEGATIVE_INFINITY;
     case "crossSymbolSurvival":
       return r.crossSymbolSurvival ?? Number.NEGATIVE_INFINITY;
+    case "crossTimeframeSurvival":
+      return r.crossTimeframeSurvival ?? Number.NEGATIVE_INFINITY;
   }
 }
 

@@ -1,6 +1,10 @@
 import { adjustForCosts, selectedExecutionSummary } from "@/lib/costAnalysis";
 import { formatDefinitionParameters } from "@/lib/reproductionRecipe";
 import { summarizeSymbolAttribution } from "@/lib/symbolAttribution";
+import {
+  validationFailureReason,
+  validationHeldUp,
+} from "@/lib/validationPolicy";
 import type {
   CrossReferenceResult,
   Dataset,
@@ -146,7 +150,7 @@ export function generateReport(
       avgMove: p.avgMove,
       sampleSize: p.sampleSize,
       confidence: p.confidence,
-      degraded: v?.degraded ?? false,
+      degraded: v ? !validationHeldUp(v) : false,
     };
   });
 
@@ -208,9 +212,11 @@ export function generateReport(
   const discoveryParagraphs: string[] = [];
   for (const p of topPatterns) {
     const v = validationById.get(p.id);
-    const degradedNote = v?.degraded
-      ? ` However, this pattern ${v.degradationNote.toLowerCase()}`
-      : " It held up out-of-sample.";
+    const degradedNote = v
+      ? validationHeldUp(v)
+        ? " It passed the out-of-sample reliability rule."
+        : ` It failed the out-of-sample reliability rule (${validationFailureReason(v)}).`
+      : " It has not been validated.";
     const liftNote =
       p.liftVsBaseline != null
         ? ` This is ${p.liftVsBaseline.toFixed(1)} percentage points above the ${
@@ -326,9 +332,11 @@ export function generateReport(
     for (const r of ratioRanked) {
       const p = r.pattern;
       const v = r.validation;
-      const degradedNote = v?.degraded
-        ? ` Flagged as degraded out-of-sample (${v.degradationNote.toLowerCase()}).`
-        : "";
+      const degradedNote = v
+        ? validationHeldUp(v)
+          ? " Passed the out-of-sample reliability rule."
+          : ` Failed the out-of-sample reliability rule (${validationFailureReason(v)}).`
+        : " Not validated.";
       ratioParagraphs.push(
         `#${p.label.replace(/^When /, "")}: direction-adjusted MFE/MAE ratio ${fmtRatio(
           r.ratio as number,
@@ -346,7 +354,10 @@ export function generateReport(
 
   // ---- Section: Validation Summary ----
   const validatedCount = validationResults.length;
-  const degradedCount = validationResults.filter((v) => v.degraded).length;
+  const passedCount = validationResults.filter((result) =>
+    validationHeldUp(result),
+  ).length;
+  const failedCount = validatedCount - passedCount;
 
   // Aggregate direction-adjusted MFE/MAE ratio across validated patterns
   // (filtering out null values), and average cross-symbol survival.
@@ -358,12 +369,17 @@ export function generateReport(
     .filter((n): n is number => n != null);
   const avgRatio = ratioValues.length > 0 ? meanOf(ratioValues) : null;
   const avgSurvival = survivalValues.length > 0 ? meanOf(survivalValues) : null;
+  const timeframeSurvivalValues = validationResults
+    .map((result) => result.crossTimeframeSurvival ?? null)
+    .filter((value): value is number => value != null);
+  const avgTimeframeSurvival =
+    timeframeSurvivalValues.length > 0 ? meanOf(timeframeSurvivalValues) : null;
 
   const validationParagraphs: string[] = [
     `Re-tested the top ${validatedCount} patterns on a 30% out-of-sample holdout (the most recent 30% of the dataset).`,
-    degradedCount === 0
-      ? `All ${validatedCount} patterns held up out-of-sample — their win rates did not drop meaningfully.`
-      : `${degradedCount} of ${validatedCount} pattern(s) degraded out-of-sample and should be treated with caution.`,
+    failedCount === 0
+      ? `All ${validatedCount} patterns passed the reliability rule: sufficient out-of-sample occurrences, a winning OOS result, and no material degradation.`
+      : `${failedCount} of ${validatedCount} pattern(s) failed the reliability rule because of insufficient out-of-sample occurrences, weak OOS performance, or material degradation.`,
   ];
   if (avgRatio != null) {
     validationParagraphs.push(
@@ -374,6 +390,17 @@ export function generateReport(
   } else if (validatedCount > 0) {
     validationParagraphs.push(
       "No direction-adjusted MFE/MAE ratios were available across the validated patterns.",
+    );
+  }
+  if (avgTimeframeSurvival != null) {
+    validationParagraphs.push(
+      `Average cross-timeframe survival across ${timeframeSurvivalValues.length} validated pattern${timeframeSurvivalValues.length === 1 ? "" : "s"}: ${fmtSurvival(
+        avgTimeframeSurvival,
+      )}.`,
+    );
+  } else if (validatedCount > 0) {
+    validationParagraphs.push(
+      "No compatible independent timeframe survival figures were available.",
     );
   }
   if (avgSurvival != null) {

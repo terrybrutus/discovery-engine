@@ -544,9 +544,16 @@ export interface DiscoveryConfig {
 export interface DiscoveryProgress {
   total: number;
   tested: number;
+  /** Accepted candidates accumulated during the current discovery run. */
+  found?: number;
   current: string; // human-readable description of current combination
   isRunning: boolean;
   estimatedRemainingMs: number;
+  /** One-based target pass derived from the selected uploaded datasets. */
+  targetPassIndex?: number;
+  targetPassTotal?: number;
+  targetDatasetLabel?: string;
+  targetTimeframe?: Timeframe;
 }
 
 export type TabId =

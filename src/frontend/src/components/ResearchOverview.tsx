@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { validationHeldUp } from "@/lib/validationPolicy";
 import type { Dataset, Feature, Pattern, ValidationResult } from "@/types";
 import {
   CalendarRange,
@@ -41,7 +42,7 @@ export function ResearchOverview({
     [features],
   );
   const validatedCount = useMemo(
-    () => validationResults.filter((v) => !v.degraded).length,
+    () => validationResults.filter((result) => validationHeldUp(result)).length,
     [validationResults],
   );
   const dateSpan = useMemo(() => {

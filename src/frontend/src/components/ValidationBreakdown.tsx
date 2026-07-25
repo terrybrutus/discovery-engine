@@ -6,6 +6,7 @@ import {
   ChartTooltipContent,
 } from "@/components/ui/chart";
 import { cn } from "@/lib/utils";
+import { validationHeldUp } from "@/lib/validationPolicy";
 import type { PatternMetrics, ValidationResult } from "@/types";
 import { TrendingDown, TrendingUp, X } from "lucide-react";
 import { useMemo } from "react";
@@ -258,7 +259,7 @@ export function ValidationAggregate({
   return (
     <div
       data-ocid="validation_aggregate"
-      className="grid grid-cols-2 gap-3 rounded-lg border border-border bg-card p-4 shadow-subtle sm:grid-cols-4"
+      className="grid grid-cols-2 gap-3 rounded-lg border border-border bg-card p-4 shadow-subtle sm:grid-cols-5"
     >
       <AggregateStat
         label="Patterns Validated"
@@ -268,7 +269,7 @@ export function ValidationAggregate({
       <AggregateStat
         label="Pass Rate"
         value={stats.total === 0 ? "—" : `${stats.passRate.toFixed(1)}%`}
-        hint={`Fraction of patterns with out-of-sample win rate above ${passThreshold}%.`}
+        hint={`Requires more than ${passThreshold}% OOS wins, at least 20 OOS occurrences, and no material degradation.`}
         dataOcid="validation_aggregate.pass_rate"
       />
       <AggregateStat
@@ -283,6 +284,12 @@ export function ValidationAggregate({
         hint="Average of non-null cross-symbol survival fractions (0–1)."
         dataOcid="validation_aggregate.avg_survival"
       />
+      <AggregateStat
+        label="Avg Cross-TF Survival"
+        value={formatSurvival(stats.avgCrossTimeframeSurvival)}
+        hint="Average survival across independently evaluated compatible timeframes."
+        dataOcid="validation_aggregate.avg_timeframe_survival"
+      />
     </div>
   );
 }
@@ -292,6 +299,7 @@ interface AggregateStats {
   passRate: number;
   avgDirectionAdjustedMfeMaeRatio: number | null;
   avgCrossSymbolSurvival: number | null;
+  avgCrossTimeframeSurvival: number | null;
 }
 
 function computeAggregate(
@@ -305,11 +313,12 @@ function computeAggregate(
       passRate: 0,
       avgDirectionAdjustedMfeMaeRatio: null,
       avgCrossSymbolSurvival: null,
+      avgCrossTimeframeSurvival: null,
     };
   }
 
-  const passed = results.filter(
-    (r) => r.outOfSampleMetrics.winRate > passThreshold,
+  const passed = results.filter((result) =>
+    validationHeldUp(result, passThreshold),
   ).length;
   const passRate = (passed / total) * 100;
 
@@ -328,12 +337,21 @@ function computeAggregate(
     survivals.length === 0
       ? null
       : survivals.reduce((a, b) => a + b, 0) / survivals.length;
+  const timeframeSurvivals = results
+    .map((result) => result.crossTimeframeSurvival ?? null)
+    .filter((value): value is number => value != null);
+  const avgCrossTimeframeSurvival =
+    timeframeSurvivals.length === 0
+      ? null
+      : timeframeSurvivals.reduce((left, right) => left + right, 0) /
+        timeframeSurvivals.length;
 
   return {
     total,
     passRate,
     avgDirectionAdjustedMfeMaeRatio,
     avgCrossSymbolSurvival,
+    avgCrossTimeframeSurvival,
   };
 }
 
@@ -534,6 +552,10 @@ function buildSummary(r: ValidationResult): string {
     ).toFixed(1);
     parts.push(
       `This pattern degraded out-of-sample, dropping ${drop}pp from ${r.inSampleMetrics.winRate.toFixed(1)}% to ${r.outOfSampleMetrics.winRate.toFixed(1)}%.`,
+    );
+  } else if (!validationHeldUp(r)) {
+    parts.push(
+      `This pattern did not clear the reliability rule: its out-of-sample win rate was ${r.outOfSampleMetrics.winRate.toFixed(1)}%.`,
     );
   } else {
     parts.push(

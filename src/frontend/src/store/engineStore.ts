@@ -20,6 +20,10 @@ import {
 import { getSampleDataset } from "@/lib/sampleData";
 import { deriveSemanticColumnFeatures } from "@/lib/semanticColumns";
 import { validatePatterns } from "@/lib/validation";
+import {
+  VALIDATION_COHORT_LIMIT,
+  validationHeldUp,
+} from "@/lib/validationPolicy";
 import { BUILTIN_CATEGORIES } from "@/types";
 import type {
   CompletedStep,
@@ -76,6 +80,7 @@ const DEFAULT_CONFIG: DiscoveryConfig = {
 const DEFAULT_PROGRESS: DiscoveryProgress = {
   total: 0,
   tested: 0,
+  found: 0,
   current: "",
   isRunning: false,
   estimatedRemainingMs: 0,
@@ -821,6 +826,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
       discoveryProgress: { ...DEFAULT_PROGRESS, isRunning: true },
       patterns: [],
       discoverySearchAudits: [],
+      report: null,
       researchFeatures: [],
       researchFeatureValues: null,
       researchContextDatasetIds: selectedDatasets
@@ -841,7 +847,8 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         Math.floor(discoveryConfig.maxCombinations / targets.length),
       );
       let completedBudget = 0;
-      for (const target of targets) {
+      for (let targetIndex = 0; targetIndex < targets.length; targetIndex++) {
+        const target = targets[targetIndex];
         const research = buildMultiTimeframeResearchSpace(
           target,
           selectedDatasets,
@@ -882,8 +889,13 @@ export const useEngineStore = create<EngineState>((set, get) => ({
               discoveryProgress: {
                 ...progress,
                 tested: completedBudget + progress.tested,
+                found: allPatterns.length + (progress.found ?? 0),
                 total: budgetPerTarget * targets.length,
-                current: `[${target.timeframe} · ${targetLabel}] ${progress.current}`,
+                current: progress.current,
+                targetPassIndex: targetIndex + 1,
+                targetPassTotal: targets.length,
+                targetDatasetLabel: targetLabel,
+                targetTimeframe: target.timeframe,
               },
             });
           },
@@ -920,46 +932,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
               }
             : undefined,
         }));
-        // Unified mode already makes every selected timeline a target pass.
-        // Explicit-target mode additionally computes cross-source survival,
-        // but does so one aligned timeline at a time.
-        const validation =
-          targetMode === "single"
-            ? await validateMemoryBounded(
-                target,
-                selectedDatasets,
-                featuresByDataset,
-                featureValuesByDataset,
-                tagged.slice(0, 20),
-                discoveryConfig.horizon,
-              )
-            : validatePatterns(
-                target,
-                research.features,
-                research.matrix,
-                tagged.slice(0, 20),
-                [],
-              );
-        const validationByPattern = new Map(
-          validation.map((result) => [result.patternId, result]),
-        );
-        allPatterns.push(
-          ...tagged.map((pattern) => {
-            const result = validationByPattern.get(pattern.id);
-            return {
-              ...pattern,
-              validationStatus: result
-                ? result.degraded
-                  ? ("degraded" as const)
-                  : ("held" as const)
-                : ("not-tested" as const),
-              confidence: result?.degraded
-                ? ("low" as const)
-                : pattern.confidence,
-            };
-          }),
-        );
-        allValidationResults.push(...validation);
+        allPatterns.push(...tagged);
         completedBudget += budgetPerTarget;
       }
       if (cancelFlag.cancelled) {
@@ -969,11 +942,62 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         });
         return;
       }
+      const displayedPatterns = selectBalancedPatterns(allPatterns, 100);
+      const validationCohort = selectBalancedPatterns(
+        displayedPatterns,
+        VALIDATION_COHORT_LIMIT,
+      );
+      set({
+        discoveryProgress: {
+          ...get().discoveryProgress,
+          found: allPatterns.length,
+          current:
+            "Validating the same target-balanced 20-pattern cohort used by the Validation page…",
+        },
+      });
+      const cohortByTarget = new Map<string, Pattern[]>();
+      for (const pattern of validationCohort) {
+        const targetId = pattern.targetDatasetId ?? dataset.id;
+        const group = cohortByTarget.get(targetId) ?? [];
+        group.push(pattern);
+        cohortByTarget.set(targetId, group);
+      }
+      for (const [targetId, targetPatterns] of cohortByTarget) {
+        const target =
+          selectedDatasets.find((candidate) => candidate.id === targetId) ??
+          dataset;
+        allValidationResults.push(
+          ...(await validateMemoryBounded(
+            target,
+            selectedDatasets,
+            featuresByDataset,
+            featureValuesByDataset,
+            targetPatterns,
+            discoveryConfig.horizon,
+          )),
+        );
+      }
+      const validationByPattern = new Map(
+        allValidationResults.map((result) => [result.patternId, result]),
+      );
+      const finalizedPatterns = displayedPatterns.map((pattern) => {
+        const result = validationByPattern.get(pattern.id);
+        const passed = result ? validationHeldUp(result) : false;
+        return {
+          ...pattern,
+          validationStatus: result
+            ? passed
+              ? ("held" as const)
+              : ("degraded" as const)
+            : ("not-tested" as const),
+          confidence: result && !passed ? ("low" as const) : pattern.confidence,
+        };
+      });
       const completed = new Set<CompletedStep>(get().completedSteps);
       completed.add("discoveryComplete");
       completed.add("validationComplete");
       set({
-        patterns: selectBalancedPatterns(allPatterns, 100),
+        patterns: finalizedPatterns,
         discoverySearchAudits: allSearchAudits,
         validationResults: allValidationResults,
         isComputing: false,
@@ -1013,7 +1037,10 @@ export const useEngineStore = create<EngineState>((set, get) => ({
     set({ isComputing: true, lastError: null });
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     try {
-      const topPatterns = patterns.slice(0, 20);
+      const topPatterns = selectBalancedPatterns(
+        patterns,
+        VALIDATION_COHORT_LIMIT,
+      );
       const selectedDatasets = datasets.filter((candidate) =>
         targetMode === "all"
           ? selectedDatasetIds.includes(candidate.id)
@@ -1050,17 +1077,17 @@ export const useEngineStore = create<EngineState>((set, get) => ({
       );
       set({
         validationResults: results,
+        report: null,
         patterns: patterns.map((pattern) => {
           const validation = validationByPattern.get(pattern.id);
           if (!validation) return pattern;
+          const passed = validationHeldUp(validation);
           return {
             ...pattern,
-            validationStatus: validation.degraded
-              ? ("degraded" as const)
-              : ("held" as const),
-            confidence: validation.degraded
-              ? ("low" as const)
-              : pattern.confidence,
+            validationStatus: passed
+              ? ("held" as const)
+              : ("degraded" as const),
+            confidence: passed ? pattern.confidence : ("low" as const),
           };
         }),
         isComputing: false,

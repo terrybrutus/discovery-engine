@@ -1,6 +1,7 @@
 import { DiscoveryCard } from "@/components/DiscoveryCard";
 import { ResearchOverview } from "@/components/ResearchOverview";
 import { Button } from "@/components/ui/button";
+import { validationHeldUp } from "@/lib/validationPolicy";
 import type {
   Dataset,
   Feature,
@@ -142,7 +143,7 @@ export function ReportSummary({
                 confidence={p.confidence}
                 avgMAE={p.avgMAE}
                 avgMFE={p.avgMFE}
-                degraded={v?.degraded ?? false}
+                degraded={v ? !validationHeldUp(v) : false}
               />
             );
           })}
