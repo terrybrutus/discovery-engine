@@ -1,7 +1,9 @@
+import { adjustForCosts, selectedExecutionSummary } from "@/lib/costAnalysis";
 import { summarizeSymbolAttribution } from "@/lib/symbolAttribution";
 import type {
   CrossReferenceResult,
   Dataset,
+  DiscoveryConfig,
   Feature,
   Pattern,
   Report,
@@ -83,6 +85,7 @@ export function generateReport(
   validationResults: ValidationResult[],
   crossReferenceResults: CrossReferenceResult[] = [],
   includedDatasets: Dataset[] = [dataset],
+  discoveryConfig?: DiscoveryConfig,
 ): Report {
   const generatedAt = Date.now();
   const validationById = new Map(
@@ -234,6 +237,40 @@ export function generateReport(
     paragraphs: discoveryParagraphs,
   };
 
+  // ---- Section: Execution & Costs ----
+  const executionView = discoveryConfig?.executionView ?? "non-overlapping";
+  const roundTripCostBps = discoveryConfig?.roundTripCostBps ?? 0;
+  const executionParagraphs = topPatterns.flatMap((pattern) => {
+    const raw = pattern.executionComparison;
+    const selected = selectedExecutionSummary(pattern, executionView);
+    if (!raw || !selected) return [];
+    const adjusted = adjustForCosts(selected, roundTripCostBps);
+    return [
+      `${pattern.label}: ${raw.everyMatch.sampleSize.toLocaleString()} matching bars reduce to ${raw.nonOverlapping.sampleSize.toLocaleString()} non-overlapping trades when only one ${pattern.horizon}-bar position is allowed at a time. Using the ${
+        executionView === "non-overlapping"
+          ? "non-overlapping trade"
+          : "every-match"
+      } view and ${roundTripCostBps.toFixed(1)} bps round-trip cost, the direction-adjusted average is ${adjusted.avgGrossMove.toFixed(2)}% gross and ${adjusted.avgNetMove.toFixed(2)}% net${
+        adjusted.grossCostMultiple == null
+          ? ""
+          : ` (${adjusted.grossCostMultiple.toFixed(1)}× gross/cost, ${adjusted.cushion})`
+      }.`,
+    ];
+  });
+  const executionSection = {
+    id: "execution-costs",
+    title: "Execution and Cost Screen",
+    paragraphs:
+      executionParagraphs.length > 0
+        ? [
+            "This is a screening layer, not a full backtest. Estimated round-trip cost includes spread, commissions, and entry/exit slippage; a TradingView strategy should reproduce the broker-specific assumptions.",
+            ...executionParagraphs,
+          ]
+        : [
+            "This report predates the execution comparison. Re-run discovery to calculate every-match and non-overlapping trade results.",
+          ],
+  };
+
   // ---- Section: Top Patterns by Direction-Adjusted MFE/MAE Ratio ----
   // Ranks the same discovered patterns by their direction-adjusted MFE/MAE
   // ratio (favorable excursion vs. adverse excursion, signed for direction),
@@ -365,6 +402,7 @@ export function generateReport(
     featuresSection,
     discoverySection,
     topDiscoveriesSection,
+    executionSection,
     ratioSection,
     validationSection,
     symbolAttributionSection,

@@ -2,6 +2,7 @@ import { createActor } from "@/backend";
 import type { Backend } from "@/backend";
 import { DatasetSelector } from "@/components/DatasetSelector";
 import { DiscoveryControls } from "@/components/DiscoveryControls";
+import { EconomicViabilityControls } from "@/components/EconomicViabilityControls";
 import { EmptyState } from "@/components/EmptyState";
 import { PatternDetailModal } from "@/components/PatternDetailModal";
 import { PatternResultsTable } from "@/components/PatternResultsTable";
@@ -12,6 +13,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { Progress } from "@/components/ui/progress";
+import { passesEconomicFilter } from "@/lib/costAnalysis";
 import { useEngineStore } from "@/store/engineStore";
 import type { Pattern, SavedRunSummary } from "@/types";
 import { useActor, useInternetIdentity } from "@caffeineai/core-infrastructure";
@@ -65,6 +67,7 @@ export default function PatternDiscoveryPage() {
   );
   const researchTotalBars = useEngineStore((s) => s.researchTotalBars);
   const researchFeatures = useEngineStore((s) => s.researchFeatures);
+  const discoveryConfig = useEngineStore((s) => s.discoveryConfig);
 
   // ---- Save / Load Run state ----
   const savedRuns = useEngineStore((s) => s.savedRuns);
@@ -128,7 +131,13 @@ export default function PatternDiscoveryPage() {
         )
       : 0;
 
-  const enrichedPatterns = patterns;
+  const enrichedPatterns = useMemo(
+    () =>
+      patterns.filter((pattern) =>
+        passesEconomicFilter(pattern, discoveryConfig),
+      ),
+    [patterns, discoveryConfig],
+  );
 
   // Toast when a run finishes with results.
   const justFinished = !isRunning && hasRun;
@@ -457,10 +466,28 @@ export default function PatternDiscoveryPage() {
 
           {/* Results table or pre-run empty state */}
           {hasResults ? (
-            <PatternResultsTable
-              patterns={enrichedPatterns}
-              onRowClick={handleRowClick}
-            />
+            <>
+              <EconomicViabilityControls
+                visibleCount={enrichedPatterns.length}
+                totalCount={patterns.length}
+              />
+              {enrichedPatterns.length > 0 ? (
+                <PatternResultsTable
+                  patterns={enrichedPatterns}
+                  onRowClick={handleRowClick}
+                  executionView={
+                    discoveryConfig.executionView ?? "non-overlapping"
+                  }
+                  roundTripCostBps={discoveryConfig.roundTripCostBps ?? 0}
+                />
+              ) : (
+                <div className="rounded-md border border-dashed border-border bg-card px-4 py-8 text-center text-sm text-muted-foreground">
+                  No patterns clear the current economic screen. The raw
+                  discoveries are still safe—lower the cost, net-move, or
+                  gross/cost minimum, or turn the screen off.
+                </div>
+              )}
+            </>
           ) : !isRunning && !hasRun ? (
             <EmptyState
               icon={Search}

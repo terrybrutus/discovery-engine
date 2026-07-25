@@ -213,6 +213,60 @@ function median(values: number[]): number {
     : sorted[middle];
 }
 
+function buildTradeOutcomeSummary(
+  bars: OHLCVBar[],
+  matches: number[],
+  direction: Direction,
+  horizon: number,
+): import("@/types").TradeOutcomeSummary {
+  const moves: number[] = [];
+  let wins = 0;
+  for (const entryIndex of matches) {
+    const exitIndex = entryIndex + horizon;
+    if (exitIndex >= bars.length) continue;
+    const entry = bars[entryIndex].close;
+    const scale = Math.max(Math.abs(entry), 1e-9);
+    const rawMove = ((bars[exitIndex].close - entry) / scale) * 100;
+    const move = direction === "bearish" ? -rawMove : rawMove;
+    moves.push(move);
+    if (move > 0) wins++;
+  }
+  return {
+    sampleSize: moves.length,
+    winRate: moves.length > 0 ? (wins / moves.length) * 100 : 0,
+    avgGrossMove:
+      moves.length > 0
+        ? moves.reduce((sum, move) => sum + move, 0) / moves.length
+        : 0,
+    medianGrossMove: median(moves),
+  };
+}
+
+function buildExecutionComparison(
+  bars: OHLCVBar[],
+  matches: number[],
+  direction: Direction,
+  horizon: number,
+): import("@/types").ExecutionComparison {
+  const nonOverlapping: number[] = [];
+  let nextEligibleIndex = 0;
+  for (const entryIndex of matches) {
+    if (entryIndex < nextEligibleIndex) continue;
+    nonOverlapping.push(entryIndex);
+    // A new position may begin on the bar where the prior fixed hold exits.
+    nextEligibleIndex = entryIndex + horizon;
+  }
+  return {
+    everyMatch: buildTradeOutcomeSummary(bars, matches, direction, horizon),
+    nonOverlapping: buildTradeOutcomeSummary(
+      bars,
+      nonOverlapping,
+      direction,
+      horizon,
+    ),
+  };
+}
+
 function buildOutcomeProfile(
   bars: OHLCVBar[],
   matches: number[],
@@ -1506,6 +1560,12 @@ async function evaluateAllPatterns(
                   horizon,
                   config.outcomeTargetsPct ?? [0.1, 0.25, 0.5, 1],
                   config.outcomeStopsPct ?? [0.1, 0.25, 0.5, 1],
+                ),
+                executionComparison: buildExecutionComparison(
+                  bars,
+                  result.matches,
+                  result.metrics.direction,
+                  horizon,
                 ),
               });
             }

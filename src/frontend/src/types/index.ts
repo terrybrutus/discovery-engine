@@ -245,6 +245,22 @@ export type Direction = "bullish" | "bearish" | "neutral";
 
 export type Confidence = "low" | "moderate" | "high" | "very high";
 
+export interface TradeOutcomeSummary {
+  sampleSize: number;
+  winRate: number;
+  /** Direction-adjusted mean close-to-close move, in percent. */
+  avgGrossMove: number;
+  /** Direction-adjusted median close-to-close move, in percent. */
+  medianGrossMove: number;
+}
+
+export interface ExecutionComparison {
+  /** Every bar matching the discovered conditions, including clustered signals. */
+  everyMatch: TradeOutcomeSummary;
+  /** One position at a time; signals during the hold window are ignored. */
+  nonOverlapping: TradeOutcomeSummary;
+}
+
 export interface Pattern {
   id: string;
   /** Dataset whose future bars supplied this pattern's outcomes. */
@@ -279,6 +295,8 @@ export interface Pattern {
   coverage?: PatternCoverage;
   /** Rich path-dependent outcome measurements, separate from the event. */
   outcomeProfile?: OutcomeProfile;
+  /** Statistical occurrences compared with a one-position-at-a-time interpretation. */
+  executionComparison?: ExecutionComparison;
   /** Family-wise false-discovery estimate from all combinations tested. */
   falseDiscoveryRate?: number;
 }
@@ -441,6 +459,16 @@ export interface DiscoveryConfig {
   outcomeStopsPct?: number[];
   /** Number of expanding chronological folds used by validation. */
   walkForwardFolds?: number;
+  /** Estimated all-in round-trip cost in basis points (1 bp = 0.01%). */
+  roundTripCostBps?: number;
+  /** Apply the post-discovery economic viability screen. */
+  costFilterEnabled?: boolean;
+  /** Minimum average move remaining after estimated round-trip cost. */
+  minNetMovePct?: number;
+  /** Minimum gross average move divided by estimated round-trip cost. */
+  minGrossCostMultiple?: number;
+  /** Which occurrence interpretation drives the economic screen. */
+  executionView?: "every-match" | "non-overlapping";
 }
 
 export interface DiscoveryProgress {

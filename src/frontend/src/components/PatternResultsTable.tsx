@@ -11,6 +11,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { adjustForCosts, selectedExecutionSummary } from "@/lib/costAnalysis";
 import { cn } from "@/lib/utils";
 import type { Confidence, Pattern } from "@/types";
 import {
@@ -22,7 +23,13 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 
-type SortKey = "winRate" | "sampleSize" | "avgMove" | "confidence";
+type SortKey =
+  | "winRate"
+  | "sampleSize"
+  | "avgMove"
+  | "netMove"
+  | "costMultiple"
+  | "confidence";
 type SortDir = "asc" | "desc";
 
 interface SortState {
@@ -57,6 +64,13 @@ const COLUMNS: ColumnDef[] = [
   { key: "sampleSize", label: "Sample", sortable: true, align: "right" },
   { key: "winRate", label: "Win Rate", sortable: true, align: "right" },
   { key: "avgMove", label: "Avg Move %", sortable: true, align: "right" },
+  { key: "netMove", label: "Net Avg %", sortable: true, align: "right" },
+  {
+    key: "costMultiple",
+    label: "Gross / Cost",
+    sortable: true,
+    align: "right",
+  },
   { key: "mae", label: "MAE % (proxy)", sortable: false, align: "right" },
   { key: "mfe", label: "MFE % (proxy)", sortable: false, align: "right" },
   { key: "ratio", label: "Ratio", sortable: false, align: "right" },
@@ -100,6 +114,8 @@ interface PatternResultsTableProps {
   patterns: Pattern[];
   /** Called when a row is clicked — opens the detail modal. */
   onRowClick: (pattern: Pattern) => void;
+  executionView: "every-match" | "non-overlapping";
+  roundTripCostBps: number;
 }
 
 /**
@@ -111,6 +127,8 @@ interface PatternResultsTableProps {
 export function PatternResultsTable({
   patterns,
   onRowClick,
+  executionView,
+  roundTripCostBps,
 }: PatternResultsTableProps) {
   const [sort, setSort] = useState<SortState>({
     key: "winRate",
@@ -135,6 +153,40 @@ export function PatternResultsTable({
         case "avgMove":
           cmp = num(a.avgMove) - num(b.avgMove);
           break;
+        case "netMove": {
+          const aSummary = selectedExecutionSummary(a, executionView);
+          const bSummary = selectedExecutionSummary(b, executionView);
+          cmp =
+            num(
+              aSummary
+                ? adjustForCosts(aSummary, roundTripCostBps).avgNetMove
+                : undefined,
+            ) -
+            num(
+              bSummary
+                ? adjustForCosts(bSummary, roundTripCostBps).avgNetMove
+                : undefined,
+            );
+          break;
+        }
+        case "costMultiple": {
+          const aSummary = selectedExecutionSummary(a, executionView);
+          const bSummary = selectedExecutionSummary(b, executionView);
+          cmp =
+            num(
+              aSummary
+                ? (adjustForCosts(aSummary, roundTripCostBps)
+                    .grossCostMultiple ?? undefined)
+                : undefined,
+            ) -
+            num(
+              bSummary
+                ? (adjustForCosts(bSummary, roundTripCostBps)
+                    .grossCostMultiple ?? undefined)
+                : undefined,
+            );
+          break;
+        }
         case "confidence":
           cmp = CONFIDENCE_RANK[a.confidence] - CONFIDENCE_RANK[b.confidence];
           break;
@@ -142,7 +194,7 @@ export function PatternResultsTable({
       return sort.dir === "desc" ? -cmp : cmp;
     });
     return rows;
-  }, [patterns, sort]);
+  }, [executionView, patterns, roundTripCostBps, sort]);
 
   const toggleSort = (key: SortKey) => {
     setSort((prev) =>
@@ -232,141 +284,164 @@ export function PatternResultsTable({
           </TableRow>
         </TableHeader>
         <TableBody>
-          {sorted.map((p, idx) => (
-            <TableRow
-              key={p.id}
-              data-ocid={`pattern_results_table.row.${idx}`}
-              className="cursor-pointer border-border transition-colors hover:bg-primary/5 focus-visible:bg-primary/5"
-              onClick={() => onRowClick(p)}
-              tabIndex={0}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  onRowClick(p);
-                }
-              }}
-            >
-              <TableCell className="px-3 py-2.5">
-                <span className="font-mono text-xs tabular-nums text-muted-foreground">
-                  {String(idx + 1).padStart(2, "0")}
-                </span>
-              </TableCell>
-              <TableCell className="px-3 py-2.5 max-w-[28rem]">
-                <div className="flex flex-col gap-1">
-                  <span className="text-sm leading-snug text-foreground line-clamp-2">
-                    {p.plainEnglishSentence ?? p.label}
+          {sorted.map((p, idx) => {
+            const executionSummary = selectedExecutionSummary(p, executionView);
+            const costAdjusted = executionSummary
+              ? adjustForCosts(executionSummary, roundTripCostBps)
+              : null;
+            return (
+              <TableRow
+                key={p.id}
+                data-ocid={`pattern_results_table.row.${idx}`}
+                className="cursor-pointer border-border transition-colors hover:bg-primary/5 focus-visible:bg-primary/5"
+                onClick={() => onRowClick(p)}
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    onRowClick(p);
+                  }
+                }}
+              >
+                <TableCell className="px-3 py-2.5">
+                  <span className="font-mono text-xs tabular-nums text-muted-foreground">
+                    {String(idx + 1).padStart(2, "0")}
                   </span>
-                  <span className="flex items-center gap-1.5">
-                    {p.targetDatasetLabel ? (
-                      <span className="rounded border border-border px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
-                        target: {p.targetTimeframe} · {p.targetDatasetLabel}
-                      </span>
-                    ) : null}
-                    <span
-                      className={cn(
-                        "inline-flex items-center gap-0.5 text-[10px] font-medium uppercase tracking-wide",
-                        p.direction === "bullish"
-                          ? "text-primary"
-                          : p.direction === "bearish"
-                            ? "text-destructive"
-                            : "text-muted-foreground",
-                      )}
-                    >
-                      {p.direction === "bullish" ? (
-                        <ArrowUp className="size-3" aria-hidden="true" />
-                      ) : p.direction === "bearish" ? (
-                        <ArrowDown className="size-3" aria-hidden="true" />
-                      ) : (
-                        <ArrowUpDown className="size-3" aria-hidden="true" />
-                      )}
-                      {p.direction}
+                </TableCell>
+                <TableCell className="px-3 py-2.5 max-w-[28rem]">
+                  <div className="flex flex-col gap-1">
+                    <span className="text-sm leading-snug text-foreground line-clamp-2">
+                      {p.plainEnglishSentence ?? p.label}
                     </span>
-                    <span className="text-[10px] text-muted-foreground">
-                      · {p.horizon}-bar hold
+                    <span className="flex items-center gap-1.5">
+                      {p.targetDatasetLabel ? (
+                        <span className="rounded border border-border px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
+                          target: {p.targetTimeframe} · {p.targetDatasetLabel}
+                        </span>
+                      ) : null}
+                      <span
+                        className={cn(
+                          "inline-flex items-center gap-0.5 text-[10px] font-medium uppercase tracking-wide",
+                          p.direction === "bullish"
+                            ? "text-primary"
+                            : p.direction === "bearish"
+                              ? "text-destructive"
+                              : "text-muted-foreground",
+                        )}
+                      >
+                        {p.direction === "bullish" ? (
+                          <ArrowUp className="size-3" aria-hidden="true" />
+                        ) : p.direction === "bearish" ? (
+                          <ArrowDown className="size-3" aria-hidden="true" />
+                        ) : (
+                          <ArrowUpDown className="size-3" aria-hidden="true" />
+                        )}
+                        {p.direction}
+                      </span>
+                      <span className="text-[10px] text-muted-foreground">
+                        · {p.horizon}-bar hold
+                      </span>
+                      {p.liftVsBaseline != null ? (
+                        <span className="text-[10px] font-mono text-primary">
+                          · +{p.liftVsBaseline.toFixed(1)}pp vs baseline
+                        </span>
+                      ) : null}
+                      {p.validationStatus === "held" ? (
+                        <span className="text-[10px] font-medium uppercase text-primary">
+                          · held OOS
+                        </span>
+                      ) : p.validationStatus === "degraded" ? (
+                        <span className="text-[10px] font-medium uppercase text-destructive">
+                          · degraded OOS
+                        </span>
+                      ) : null}
                     </span>
-                    {p.liftVsBaseline != null ? (
-                      <span className="text-[10px] font-mono text-primary">
-                        · +{p.liftVsBaseline.toFixed(1)}pp vs baseline
-                      </span>
-                    ) : null}
-                    {p.validationStatus === "held" ? (
-                      <span className="text-[10px] font-medium uppercase text-primary">
-                        · held OOS
-                      </span>
-                    ) : p.validationStatus === "degraded" ? (
-                      <span className="text-[10px] font-medium uppercase text-destructive">
-                        · degraded OOS
-                      </span>
-                    ) : null}
-                  </span>
-                </div>
-              </TableCell>
-              <TableCell className="px-3 py-2.5 text-right font-mono tabular-nums text-foreground">
-                {fmtInt(p.sampleSize)}
-              </TableCell>
-              <TableCell
-                className={cn(
-                  "px-3 py-2.5 text-right font-mono tabular-nums font-semibold",
-                  winRateClass(p.winRate),
-                )}
-              >
-                {p.winRate == null || Number.isNaN(p.winRate)
-                  ? "—"
-                  : `${p.winRate.toFixed(1)}%`}
-              </TableCell>
-              <TableCell
-                className={cn(
-                  "px-3 py-2.5 text-right font-mono tabular-nums",
-                  p.avgMove == null || Number.isNaN(p.avgMove)
-                    ? "text-muted-foreground"
-                    : p.avgMove > 0
-                      ? "text-primary"
-                      : p.avgMove < 0
-                        ? "text-destructive"
-                        : "text-foreground",
-                )}
-              >
-                {formatPrice(p.avgMove)}
-              </TableCell>
-              <TableCell className="px-3 py-2.5 text-right font-mono tabular-nums text-muted-foreground">
-                {`${fmtNum(p.avgMAE)}%`}
-              </TableCell>
-              <TableCell className="px-3 py-2.5 text-right font-mono tabular-nums text-muted-foreground">
-                {`${fmtNum(p.avgMFE)}%`}
-              </TableCell>
-              <TableCell
-                className="px-3 py-2.5 text-right font-mono tabular-nums text-foreground"
-                data-ocid={`pattern_results_table.ratio.${idx}`}
-              >
-                {p.mfeMaeRatio != null && !Number.isNaN(p.mfeMaeRatio)
-                  ? `${p.mfeMaeRatio.toFixed(1)}:1`
-                  : "—"}
-              </TableCell>
-              <TableCell className="px-3 py-2.5">
-                <div className="flex items-center gap-2">
-                  <div
-                    className="h-1.5 w-16 overflow-hidden rounded-full bg-muted"
-                    role="progressbar"
-                    tabIndex={0}
-                    aria-valuenow={CONFIDENCE_PCT[p.confidence]}
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                    aria-label={`Confidence: ${p.confidence}`}
-                  >
-                    <div
-                      className="h-full rounded-full bg-primary transition-all"
-                      style={{
-                        width: `${CONFIDENCE_PCT[p.confidence]}%`,
-                      }}
-                    />
                   </div>
-                  <span className="text-xs capitalize text-muted-foreground whitespace-nowrap">
-                    {p.confidence}
-                  </span>
-                </div>
-              </TableCell>
-            </TableRow>
-          ))}
+                </TableCell>
+                <TableCell className="px-3 py-2.5 text-right font-mono tabular-nums text-foreground">
+                  {fmtInt(p.sampleSize)}
+                </TableCell>
+                <TableCell
+                  className={cn(
+                    "px-3 py-2.5 text-right font-mono tabular-nums font-semibold",
+                    winRateClass(p.winRate),
+                  )}
+                >
+                  {p.winRate == null || Number.isNaN(p.winRate)
+                    ? "—"
+                    : `${p.winRate.toFixed(1)}%`}
+                </TableCell>
+                <TableCell
+                  className={cn(
+                    "px-3 py-2.5 text-right font-mono tabular-nums",
+                    p.avgMove == null || Number.isNaN(p.avgMove)
+                      ? "text-muted-foreground"
+                      : p.avgMove > 0
+                        ? "text-primary"
+                        : p.avgMove < 0
+                          ? "text-destructive"
+                          : "text-foreground",
+                  )}
+                >
+                  {formatPrice(p.avgMove)}
+                </TableCell>
+                <TableCell
+                  className={cn(
+                    "px-3 py-2.5 text-right font-mono tabular-nums",
+                    costAdjusted == null
+                      ? "text-muted-foreground"
+                      : costAdjusted.avgNetMove > 0
+                        ? "text-primary"
+                        : "text-destructive",
+                  )}
+                >
+                  {costAdjusted ? formatPrice(costAdjusted.avgNetMove) : "—"}
+                </TableCell>
+                <TableCell className="px-3 py-2.5 text-right font-mono tabular-nums text-foreground">
+                  {costAdjusted?.grossCostMultiple == null
+                    ? "—"
+                    : `${costAdjusted.grossCostMultiple.toFixed(1)}×`}
+                </TableCell>
+                <TableCell className="px-3 py-2.5 text-right font-mono tabular-nums text-muted-foreground">
+                  {`${fmtNum(p.avgMAE)}%`}
+                </TableCell>
+                <TableCell className="px-3 py-2.5 text-right font-mono tabular-nums text-muted-foreground">
+                  {`${fmtNum(p.avgMFE)}%`}
+                </TableCell>
+                <TableCell
+                  className="px-3 py-2.5 text-right font-mono tabular-nums text-foreground"
+                  data-ocid={`pattern_results_table.ratio.${idx}`}
+                >
+                  {p.mfeMaeRatio != null && !Number.isNaN(p.mfeMaeRatio)
+                    ? `${p.mfeMaeRatio.toFixed(1)}:1`
+                    : "—"}
+                </TableCell>
+                <TableCell className="px-3 py-2.5">
+                  <div className="flex items-center gap-2">
+                    <div
+                      className="h-1.5 w-16 overflow-hidden rounded-full bg-muted"
+                      role="progressbar"
+                      tabIndex={0}
+                      aria-valuenow={CONFIDENCE_PCT[p.confidence]}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-label={`Confidence: ${p.confidence}`}
+                    >
+                      <div
+                        className="h-full rounded-full bg-primary transition-all"
+                        style={{
+                          width: `${CONFIDENCE_PCT[p.confidence]}%`,
+                        }}
+                      />
+                    </div>
+                    <span className="text-xs capitalize text-muted-foreground whitespace-nowrap">
+                      {p.confidence}
+                    </span>
+                  </div>
+                </TableCell>
+              </TableRow>
+            );
+          })}
         </TableBody>
       </Table>
     </div>

@@ -58,6 +58,11 @@ const DEFAULT_CONFIG: DiscoveryConfig = {
   outcomeTargetsPct: [0.1, 0.25, 0.5, 1],
   outcomeStopsPct: [0.1, 0.25, 0.5, 1],
   walkForwardFolds: 4,
+  roundTripCostBps: 0,
+  costFilterEnabled: false,
+  minNetMovePct: 0,
+  minGrossCostMultiple: 3,
+  executionView: "non-overlapping",
 };
 
 const DEFAULT_PROGRESS: DiscoveryProgress = {
@@ -1042,6 +1047,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
       datasets,
       selectedDatasetIds,
       researchFeatures,
+      discoveryConfig,
     } = get();
     if (!dataset || !features.length) return;
     try {
@@ -1054,6 +1060,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         datasets.filter((candidate) =>
           selectedDatasetIds.includes(candidate.id),
         ),
+        discoveryConfig,
       );
       const completed = new Set<CompletedStep>(get().completedSteps);
       completed.add("reportReady");

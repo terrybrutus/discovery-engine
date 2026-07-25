@@ -12,6 +12,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { adjustForCosts } from "@/lib/costAnalysis";
 import { cn } from "@/lib/utils";
 import { useEngineStore } from "@/store/engineStore";
 import type {
@@ -251,6 +252,7 @@ export function PatternDetailModal({
   const dataset = useEngineStore((s) => s.dataset);
   const features = useEngineStore((s) => s.features);
   const featureValues = useEngineStore((s) => s.featureValues);
+  const discoveryConfig = useEngineStore((s) => s.discoveryConfig);
 
   const histogram = useMemo(() => {
     if (!pattern || !dataset || !featureValues) return [];
@@ -301,6 +303,24 @@ export function PatternDetailModal({
         : pattern.avgMove < 0
           ? "text-destructive"
           : undefined;
+  const executionRows = pattern.executionComparison
+    ? [
+        {
+          label: "Every matching bar",
+          summary: adjustForCosts(
+            pattern.executionComparison.everyMatch,
+            discoveryConfig.roundTripCostBps ?? 0,
+          ),
+        },
+        {
+          label: "Non-overlapping trades",
+          summary: adjustForCosts(
+            pattern.executionComparison.nonOverlapping,
+            discoveryConfig.roundTripCostBps ?? 0,
+          ),
+        },
+      ]
+    : [];
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -438,6 +458,80 @@ export function PatternDetailModal({
         </div>
 
         <Separator />
+
+        {executionRows.length > 0 ? (
+          <>
+            <div className="flex flex-col gap-3">
+              <div>
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Execution reality check
+                </h3>
+                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                  Every matching bar preserves the statistical evidence.
+                  Non-overlapping trades enter the first signal and ignore new
+                  signals until the {pattern.horizon}-bar hold ends, which is
+                  closer to a one-position-at-a-time strategy.
+                </p>
+              </div>
+              <div className="overflow-x-auto rounded border border-border">
+                <table className="w-full text-xs">
+                  <thead className="bg-muted/30 text-muted-foreground">
+                    <tr>
+                      <th className="px-2 py-1.5 text-left">Interpretation</th>
+                      <th className="px-2 py-1.5 text-right">Signals</th>
+                      <th className="px-2 py-1.5 text-right">Win %</th>
+                      <th className="px-2 py-1.5 text-right">Gross avg</th>
+                      <th className="px-2 py-1.5 text-right">Net avg</th>
+                      <th className="px-2 py-1.5 text-right">Gross/cost</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {executionRows.map(({ label, summary }) => (
+                      <tr key={label} className="border-t border-border">
+                        <td className="px-2 py-2 font-medium">{label}</td>
+                        <td className="px-2 py-2 text-right font-mono">
+                          {summary.sampleSize.toLocaleString()}
+                        </td>
+                        <td className="px-2 py-2 text-right font-mono">
+                          {summary.winRate.toFixed(1)}%
+                        </td>
+                        <td className="px-2 py-2 text-right font-mono">
+                          {summary.avgGrossMove >= 0 ? "+" : ""}
+                          {summary.avgGrossMove.toFixed(2)}%
+                        </td>
+                        <td
+                          className={cn(
+                            "px-2 py-2 text-right font-mono",
+                            summary.avgNetMove > 0
+                              ? "text-primary"
+                              : "text-destructive",
+                          )}
+                        >
+                          {summary.avgNetMove >= 0 ? "+" : ""}
+                          {summary.avgNetMove.toFixed(2)}%
+                        </td>
+                        <td className="px-2 py-2 text-right font-mono">
+                          {summary.grossCostMultiple == null
+                            ? "—"
+                            : `${summary.grossCostMultiple.toFixed(1)}×`}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="text-[11px] leading-relaxed text-muted-foreground">
+                Net estimates subtract{" "}
+                {(discoveryConfig.roundTripCostBps ?? 0).toFixed(1)} bps (
+                {((discoveryConfig.roundTripCostBps ?? 0) / 100).toFixed(3)}%)
+                once per completed trade. Ratios are screening heuristics: under
+                2× is fragile, 3× is promising, and 5× provides a larger
+                cushion.
+              </p>
+            </div>
+            <Separator />
+          </>
+        ) : null}
 
         {pattern.outcomeProfile ? (
           <>
