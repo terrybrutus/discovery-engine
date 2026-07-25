@@ -355,7 +355,6 @@ async function validateMemoryBounded(
   featuresByDataset: Record<string, Feature[]>,
   featureValuesByDataset: Record<string, FeatureMatrix>,
   patterns: Pattern[],
-  horizon: number,
 ): Promise<ValidationResult[]> {
   const primaryResearch = buildMultiTimeframeResearchSpace(
     target,
@@ -406,9 +405,17 @@ async function validateMemoryBounded(
         {
           dataset: candidate,
           matrix: candidateMatrix,
-          horizon: Math.max(
-            1,
-            Math.round((horizon * targetMinutes) / timeframeMinutes(candidate)),
+          horizonByPatternId: Object.fromEntries(
+            patterns.map((pattern) => [
+              pattern.id,
+              Math.max(
+                1,
+                Math.round(
+                  (pattern.horizon * targetMinutes) /
+                    timeframeMinutes(candidate),
+                ),
+              ),
+            ]),
           ),
         },
       ],
@@ -984,7 +991,6 @@ export const useEngineStore = create<EngineState>((set, get) => ({
             featuresByDataset,
             featureValuesByDataset,
             targetPatterns,
-            discoveryConfig.horizon,
           )),
         );
       }
@@ -1041,7 +1047,6 @@ export const useEngineStore = create<EngineState>((set, get) => ({
       featuresByDataset,
       featureValuesByDataset,
       patterns,
-      discoveryConfig,
       targetMode,
     } = get();
     if (!dataset || !patterns.length) return;
@@ -1077,7 +1082,6 @@ export const useEngineStore = create<EngineState>((set, get) => ({
             featuresByDataset,
             featureValuesByDataset,
             targetPatterns,
-            discoveryConfig.horizon,
           )),
         );
       }

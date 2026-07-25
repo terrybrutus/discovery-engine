@@ -72,6 +72,17 @@ function fmtInt(value: number | null | undefined): string {
   return value.toLocaleString();
 }
 
+function fmtDuration(milliseconds: number): string {
+  if (!Number.isFinite(milliseconds) || milliseconds <= 0) return "—";
+  const minutes = Math.round(milliseconds / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = minutes / 60;
+  if (hours < 24)
+    return `${Number.isInteger(hours) ? hours : hours.toFixed(1)}h`;
+  const days = hours / 24;
+  return `${Number.isInteger(days) ? days : days.toFixed(1)}d`;
+}
+
 /**
  * Re-evaluates a pattern against the loaded dataset + feature matrix to
  * recover the per-bar forward returns, then bins them into a histogram.
@@ -591,6 +602,112 @@ export function PatternDetailModal({
         </div>
 
         <Separator />
+
+        {pattern.horizonAnalysis ? (
+          <>
+            <div className="flex flex-col gap-3">
+              <div>
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Hold-window performance curve
+                </h3>
+                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                  Recommended hold:{" "}
+                  <span className="font-mono font-semibold text-primary">
+                    {pattern.horizonAnalysis.recommendedHorizon} bars ·{" "}
+                    {fmtDuration(pattern.horizonAnalysis.recommendedDurationMs)}
+                  </span>
+                  . Ranking uses non-overlapping trades, net expectancy,
+                  dispersion, drawdown, early/late stability, sample evidence,
+                  and elapsed time—not win rate alone.
+                </p>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  {pattern.horizonAnalysis.rationale}
+                </p>
+              </div>
+              <div className="overflow-x-auto rounded border border-border">
+                <table className="w-full text-xs">
+                  <thead className="bg-muted/30 text-muted-foreground">
+                    <tr>
+                      <th className="px-2 py-1.5 text-left">Hold</th>
+                      <th className="px-2 py-1.5 text-right">Elapsed</th>
+                      <th className="px-2 py-1.5 text-right">Trades</th>
+                      <th className="px-2 py-1.5 text-right">Win %</th>
+                      <th className="px-2 py-1.5 text-right">Net avg</th>
+                      <th className="px-2 py-1.5 text-right">MFE:MAE</th>
+                      <th className="px-2 py-1.5 text-right">Max DD</th>
+                      <th className="px-2 py-1.5 text-right">Drift</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pattern.horizonAnalysis.candidates.map((candidate) => {
+                      const recommended =
+                        candidate.horizon ===
+                        pattern.horizonAnalysis?.recommendedHorizon;
+                      return (
+                        <tr
+                          key={candidate.horizon}
+                          className={cn(
+                            "border-t border-border",
+                            recommended && "bg-primary/5",
+                          )}
+                        >
+                          <td
+                            className={cn(
+                              "px-2 py-2 font-mono",
+                              recommended && "font-semibold text-primary",
+                            )}
+                          >
+                            {candidate.horizon} bars
+                            {recommended ? " · best" : ""}
+                          </td>
+                          <td className="px-2 py-2 text-right font-mono">
+                            {fmtDuration(candidate.durationMs)}
+                          </td>
+                          <td className="px-2 py-2 text-right font-mono">
+                            {candidate.nonOverlapping.sampleSize.toLocaleString()}
+                          </td>
+                          <td className="px-2 py-2 text-right font-mono">
+                            {candidate.nonOverlapping.winRate.toFixed(1)}%
+                          </td>
+                          <td
+                            className={cn(
+                              "px-2 py-2 text-right font-mono",
+                              candidate.avgNetMove > 0
+                                ? "text-primary"
+                                : "text-destructive",
+                            )}
+                          >
+                            {candidate.avgNetMove >= 0 ? "+" : ""}
+                            {candidate.avgNetMove.toFixed(3)}%
+                          </td>
+                          <td className="px-2 py-2 text-right font-mono">
+                            {candidate.mfeMaeRatio == null
+                              ? "—"
+                              : `${candidate.mfeMaeRatio.toFixed(2)}:1`}
+                          </td>
+                          <td className="px-2 py-2 text-right font-mono">
+                            {candidate.maxDrawdown.toFixed(2)}%
+                          </td>
+                          <td className="px-2 py-2 text-right font-mono">
+                            {candidate.stabilityDeltaPp.toFixed(1)}pp
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <p className="text-[11px] leading-relaxed text-muted-foreground">
+                “Trades” ignores new signals until the current hold exits. Net
+                average subtracts{" "}
+                {pattern.horizonAnalysis.roundTripCostBps.toFixed(1)} bps per
+                completed trade. The best row is a research recommendation, not
+                a guarantee.
+              </p>
+            </div>
+            <Separator />
+          </>
+        ) : null}
 
         {executionRows.length > 0 ? (
           <>

@@ -266,6 +266,39 @@ export interface ExecutionComparison {
   nonOverlapping: TradeOutcomeSummary;
 }
 
+export interface HorizonPerformance {
+  /** Candidate exit measured in bars of the outcome/target dataset. */
+  horizon: number;
+  /** Real elapsed duration derived from the uploaded target timestamps. */
+  durationMs: number;
+  everyMatch: TradeOutcomeSummary;
+  nonOverlapping: TradeOutcomeSummary;
+  /** Direction-adjusted excursion measured over this horizon. */
+  avgMFE: number;
+  avgMAE: number;
+  mfeMaeRatio: number | null;
+  /** Non-overlapping expectancy after the configured round-trip cost. */
+  avgNetMove: number;
+  /** Peak-to-trough loss in the sequential non-overlapping net-return path. */
+  maxDrawdown: number;
+  /** Difference between early- and late-sample non-overlapping win rates. */
+  stabilityDeltaPp: number;
+  baselineWinRate: number;
+  liftVsBaseline: number;
+  /** Risk-, evidence-, stability-, and time-adjusted comparison score. */
+  recommendationScore: number;
+  eligible: boolean;
+}
+
+export interface HorizonAnalysis {
+  recommendedHorizon: number;
+  recommendedDurationMs: number;
+  /** Cost assumption frozen when discovery selected the recommendation. */
+  roundTripCostBps: number;
+  rationale: string;
+  candidates: HorizonPerformance[];
+}
+
 export interface ReproductionCondition {
   featureId: string;
   featureName: string;
@@ -336,6 +369,8 @@ export interface Pattern {
   outcomeProfile?: OutcomeProfile;
   /** Statistical occurrences compared with a one-position-at-a-time interpretation. */
   executionComparison?: ExecutionComparison;
+  /** Pattern-specific comparison of executable outcomes across hold windows. */
+  horizonAnalysis?: HorizonAnalysis;
   /** Frozen calculation lineage needed to understand and reproduce the signal. */
   reproductionRecipe?: ReproductionRecipe;
   /** Source datasets/timeframes whose conditions jointly define this pattern. */

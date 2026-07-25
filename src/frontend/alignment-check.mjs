@@ -17,6 +17,9 @@ try {
   const { buildMultiTimeframeResearchSpace } = await server.ssrLoadModule(
     "/src/lib/multiTimeframe.ts",
   );
+  const { analyzePatternHorizons } = await server.ssrLoadModule(
+    "/src/lib/discovery.ts",
+  );
   const { meetsConfluenceRequirement } = await server.ssrLoadModule(
     "/src/lib/patternConfluence.ts",
   );
@@ -158,6 +161,80 @@ try {
     throw new Error("Runtime did not repair a stale multi-source lens config.");
   }
 
+  // Execution-horizon regression: the deterministic event rises most
+  // efficiently for five 1m bars, then fades and is losing by 21 bars. Auto
+  // recommendation must select 5 rather than drifting to the longest option.
+  const executionBars = Array.from({ length: 900 }, (_, index) => ({
+    timestamp: Date.parse("2026-01-05T09:30:00Z") + index * 60_000,
+    open: 100,
+    high: 100.01,
+    low: 99.99,
+    close: 100,
+  }));
+  const executionMatches = [];
+  for (let entry = 30; entry < 850; entry += 60) {
+    executionMatches.push(entry);
+    const path = new Map([
+      [1, 100.1],
+      [2, 100.2],
+      [3, 100.4],
+      [5, 101],
+      [8, 100.3],
+      [12, 99.8],
+      [13, 99.7],
+      [21, 99.5],
+      [34, 99.4],
+      [50, 99.3],
+    ]);
+    for (const [offset, close] of path) {
+      executionBars[entry + offset] = {
+        ...executionBars[entry + offset],
+        open: close,
+        high: close + 0.01,
+        low: close - 0.01,
+        close,
+      };
+    }
+  }
+  const horizonAnalysis = analyzePatternHorizons(
+    executionBars,
+    executionMatches,
+    "bullish",
+    {
+      maxDepth: 3,
+      minSampleSize: 10,
+      minWinRate: 55,
+      enabledCategories: [],
+      horizon: 12,
+      maxCombinations: 1,
+      mfeMaeWindow: 12,
+      minMfeMaeRatio: 0,
+      mfeMaeRatioMode: "off",
+      holdWindowAutoFind: true,
+      outcomeTargetsPct: [0.1, 0.25, 0.5, 1],
+      outcomeStopsPct: [0.1, 0.25, 0.5, 1],
+      walkForwardFolds: 4,
+      roundTripCostBps: 0,
+      costFilterEnabled: false,
+      minNetMovePct: 0,
+      minGrossCostMultiple: 0,
+      executionView: "non-overlapping",
+      requireCrossSourceConfluence: false,
+      minConfluenceSources: 1,
+    },
+  );
+  if (horizonAnalysis.recommendedHorizon !== 5) {
+    throw new Error(
+      `Expected the executable hold optimizer to select 5 bars; got ${horizonAnalysis.recommendedHorizon}.`,
+    );
+  }
+  const twentyOne = horizonAnalysis.candidates.find(
+    (candidate) => candidate.horizon === 21,
+  );
+  if (!twentyOne || twentyOne.avgNetMove >= 0) {
+    throw new Error("The losing 21-bar control was not measured correctly.");
+  }
+
   console.log(
     JSON.stringify(
       {
@@ -171,6 +248,8 @@ try {
         singleSourceRejected: true,
         crossSourceAccepted: true,
         multiTimeframeLensPreserved: true,
+        recommendedExecutionHold: horizonAnalysis.recommendedHorizon,
+        losingLongHoldNetPct: twentyOne.avgNetMove,
       },
       null,
       2,

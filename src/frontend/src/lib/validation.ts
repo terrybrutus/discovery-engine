@@ -290,6 +290,8 @@ export interface SurvivalDataset {
   matrix: FeatureMatrix;
   /** Equivalent real-time hold window expressed in this dataset's bars. */
   horizon?: number;
+  /** Pattern-specific real-time conversions when recommended holds differ. */
+  horizonByPatternId?: Record<string, number>;
 }
 
 /**
@@ -492,11 +494,12 @@ export function validatePatterns(
       }
       // Additional datasets: re-evaluate matches on each dataset's bars
       // using its own feature matrix.
-      for (const {
-        dataset: ds,
-        matrix: mx,
-        horizon: datasetHorizon = pattern.horizon,
-      } of additionalDatasets) {
+      for (const additional of additionalDatasets) {
+        const { dataset: ds, matrix: mx } = additional;
+        const datasetHorizon =
+          additional.horizonByPatternId?.[pattern.id] ??
+          additional.horizon ??
+          pattern.horizon;
         const lk = new Map<string, FeatureLookup>();
         for (const f of features) {
           if (mx[f.id]) lk.set(f.id, { feature: f, values: mx[f.id] });

@@ -58,6 +58,18 @@ function fmtSurvival(n: number): string {
   return fmtPct(n * 100);
 }
 
+function fmtDuration(milliseconds: number): string {
+  if (!Number.isFinite(milliseconds) || milliseconds <= 0) return "unknown";
+  const minutes = Math.round(milliseconds / 60_000);
+  if (minutes < 60) return `${minutes} minutes`;
+  const hours = minutes / 60;
+  if (hours < 24) {
+    return `${Number.isInteger(hours) ? hours : hours.toFixed(1)} hours`;
+  }
+  const days = hours / 24;
+  return `${Number.isInteger(days) ? days : days.toFixed(1)} days`;
+}
+
 function meanOf(values: number[]): number {
   if (values.length === 0) return 0;
   return values.reduce((acc, v) => acc + v, 0) / values.length;
@@ -278,6 +290,34 @@ export function generateReport(
           ],
   };
 
+  // ---- Section: Pattern-specific hold recommendations ----
+  const horizonParagraphs = topPatterns.flatMap((pattern) => {
+    const analysis = pattern.horizonAnalysis;
+    if (!analysis) return [];
+    const curve = analysis.candidates
+      .map(
+        (candidate) =>
+          `${candidate.horizon}b: ${candidate.nonOverlapping.sampleSize} trades, ${candidate.nonOverlapping.winRate.toFixed(1)}% wins, ${candidate.avgNetMove >= 0 ? "+" : ""}${candidate.avgNetMove.toFixed(3)}% net avg, ${candidate.maxDrawdown.toFixed(2)}% max DD`,
+      )
+      .join(" | ");
+    return [
+      `${pattern.label}: recommended ${analysis.recommendedHorizon} target bars (${fmtDuration(analysis.recommendedDurationMs)}) using ${analysis.roundTripCostBps.toFixed(1)} bps round-trip cost. ${analysis.rationale} Full curve — ${curve}.`,
+    ];
+  });
+  const horizonSection = {
+    id: "hold-window-analysis",
+    title: "Pattern-Specific Hold Recommendations",
+    paragraphs:
+      horizonParagraphs.length > 0
+        ? [
+            "Each retained pattern was replayed across multiple exit horizons. Recommendations use non-overlapping net trade outcomes, return dispersion, drawdown, early/late stability, sample evidence, and time efficiency; a longer hold cannot win merely by allowing more time for price to move.",
+            ...horizonParagraphs,
+          ]
+        : [
+            "This report predates pattern-specific hold analysis. Re-run discovery to compare executable outcomes across multiple horizons.",
+          ],
+  };
+
   // ---- Section: Reproduction Recipes ----
   const recipeParagraphs = topPatterns.flatMap((pattern, index) => {
     const recipe = pattern.reproductionRecipe;
@@ -457,6 +497,7 @@ export function generateReport(
       "Each pattern is a combination of 2-6 conditions on deterministic features and events. Events such as pivots, divergence, crossings, rejection, breakouts, compression, expansion, regimes, and sequences are detected first; forward outcomes are then measured separately.",
       "When more than one source dataset is selected, a reported pattern must contain conditions from at least two independently aligned sources. Single-source combinations are not reported as unified confluence discoveries.",
       "Outcomes include final return, MFE/MAE, median movement, target and stop hit rates, time-to-target, and target-before-stop probability. Confidence intervals and a multiple-testing-adjusted false-discovery estimate prevent a small sample or a large search from being presented as certainty.",
+      "Every retained event is replayed across multiple holds on its outcome dataset. The recommended hold is pattern-specific and is ranked using non-overlapping net expectancy, dispersion, drawdown, early/late stability, sample evidence, and elapsed time rather than raw win rate.",
       "Validation uses a recent 30% holdout plus expanding chronological walk-forward folds. Cross-symbol and cross-timeframe survival are reported only when independent datasets were actually evaluated; a single dataset is not labeled 100% survival.",
       "Uploaded research rows and statistical calculations remain in your browser. The optional Gemini definition compiler sends only sampled column summary statistics, user notes, and optional indicator source; it never receives the uploaded row history or calculates profitability.",
     ],
@@ -469,6 +510,7 @@ export function generateReport(
     discoverySection,
     topDiscoveriesSection,
     recipeSection,
+    horizonSection,
     executionSection,
     ratioSection,
     validationSection,

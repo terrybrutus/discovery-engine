@@ -5,7 +5,11 @@ import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
-import { isFeatureEligibleForDiscovery, runDiscovery } from "@/lib/discovery";
+import {
+  HOLD_WINDOW_CANDIDATES,
+  isFeatureEligibleForDiscovery,
+  runDiscovery,
+} from "@/lib/discovery";
 import type { FeatureOverride, FeatureOverrides } from "@/lib/features";
 import { MULTI_TIMEFRAME_CATEGORY } from "@/lib/researchCategories";
 import { cn } from "@/lib/utils";
@@ -73,13 +77,6 @@ const MFE_MAE_MODES: ReadonlyArray<{
   { value: "positive", label: "Positive-only", hint: "Ratio > threshold" },
   { value: "auto", label: "Auto-find", hint: "Grid-search threshold" },
 ];
-
-/**
- * Hold-window (outcome horizon) auto-find candidate grid. Mirrors the Max
- * Data probe approach: iterate viable horizon lengths and let the engine
- * pick the best. The values are bar counts on the active timeframe.
- */
-const HOLD_WINDOW_CANDIDATES = [3, 6, 12, 18, 24, 36] as const;
 
 interface DiscoveryControlsProps {
   /** True while a discovery run is in progress — disables inputs, swaps Run for Cancel. */
@@ -419,8 +416,8 @@ export function DiscoveryControls({
         <p className="text-xs text-muted-foreground">
           {config.holdWindowAutoFind ? (
             <span className="text-primary">
-              Auto-find on — engine grid-searches{" "}
-              {HOLD_WINDOW_CANDIDATES.join(", ")} bars and picks the best.
+              Auto-find compares {HOLD_WINDOW_CANDIDATES.join(", ")} bars for
+              every pattern and recommends its strongest executable hold.
             </span>
           ) : (
             "Number of bars forward used to measure pattern outcome."

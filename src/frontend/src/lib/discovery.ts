@@ -14,6 +14,8 @@ import type {
   DiscoverySearchAudit,
   Feature,
   FeatureMatrix,
+  HorizonAnalysis,
+  HorizonPerformance,
   OHLCVBar,
   OutcomeProfile,
   Pattern,
@@ -294,6 +296,224 @@ function buildExecutionComparison(
       direction,
       horizon,
     ),
+  };
+}
+
+export const HOLD_WINDOW_CANDIDATES = [1, 2, 3, 5, 8, 12, 21, 34];
+
+function nonOverlappingMatches(matches: number[], horizon: number): number[] {
+  const selected: number[] = [];
+  let nextEligibleIndex = 0;
+  for (const entryIndex of matches) {
+    if (entryIndex < nextEligibleIndex) continue;
+    selected.push(entryIndex);
+    nextEligibleIndex = entryIndex + horizon;
+  }
+  return selected;
+}
+
+function directionAdjustedMoves(
+  bars: OHLCVBar[],
+  matches: number[],
+  direction: Direction,
+  horizon: number,
+): number[] {
+  const moves: number[] = [];
+  for (const entryIndex of matches) {
+    const exitIndex = entryIndex + horizon;
+    if (exitIndex >= bars.length) continue;
+    const entry = bars[entryIndex].close;
+    const scale = Math.max(Math.abs(entry), 1e-9);
+    const rawMove = ((bars[exitIndex].close - entry) / scale) * 100;
+    moves.push(direction === "bearish" ? -rawMove : rawMove);
+  }
+  return moves;
+}
+
+function mean(values: number[]): number {
+  return values.length
+    ? values.reduce((sum, value) => sum + value, 0) / values.length
+    : 0;
+}
+
+function sampleDeviation(values: number[], average: number): number {
+  if (values.length < 2) return 0;
+  const variance =
+    values.reduce((sum, value) => sum + (value - average) ** 2, 0) /
+    (values.length - 1);
+  return Math.sqrt(Math.max(0, variance));
+}
+
+function maximumDrawdown(returns: number[]): number {
+  let equity = 0;
+  let peak = 0;
+  let drawdown = 0;
+  for (const value of returns) {
+    equity += value;
+    peak = Math.max(peak, equity);
+    drawdown = Math.max(drawdown, peak - equity);
+  }
+  return drawdown;
+}
+
+function observedIntervalMs(bars: OHLCVBar[]): number {
+  const intervals: number[] = [];
+  for (let index = 1; index < Math.min(bars.length, 500); index++) {
+    const interval = bars[index].timestamp - bars[index - 1].timestamp;
+    if (interval > 0) intervals.push(interval);
+  }
+  if (intervals.length === 0) return 0;
+  intervals.sort((left, right) => left - right);
+  return intervals[Math.floor(intervals.length / 2)];
+}
+
+function excursionSummary(
+  bars: OHLCVBar[],
+  matches: number[],
+  direction: Direction,
+  horizon: number,
+): { avgMFE: number; avgMAE: number; ratio: number | null } {
+  let favorable = 0;
+  let adverse = 0;
+  let count = 0;
+  for (const entryIndex of matches) {
+    const outcome = measureOutcome(bars, entryIndex, horizon, horizon);
+    if (!outcome) continue;
+    favorable +=
+      direction === "bearish" ? outcome.downExcursion : outcome.upExcursion;
+    adverse +=
+      direction === "bearish" ? outcome.upExcursion : outcome.downExcursion;
+    count++;
+  }
+  const avgMFE = count > 0 ? favorable / count : 0;
+  const avgMAE = count > 0 ? adverse / count : 0;
+  const ratio = computeMfeMaeRatio(avgMFE, avgMAE);
+  return {
+    avgMFE,
+    avgMAE,
+    ratio: Number.isFinite(ratio) ? ratio : null,
+  };
+}
+
+/**
+ * Compare one already-discovered event across multiple executable hold
+ * windows. Direction is frozen from discovery so a horizon cannot "win" by
+ * silently flipping a long setup into a short setup. Recommendations use
+ * non-overlapping trades, net expectancy, dispersion, drawdown, stability,
+ * evidence, and elapsed time; raw win rate alone cannot select the winner.
+ */
+export function analyzePatternHorizons(
+  bars: OHLCVBar[],
+  matches: number[],
+  direction: Direction,
+  config: DiscoveryConfig,
+): HorizonAnalysis {
+  const roundTripCostPct = Math.max(0, config.roundTripCostBps ?? 0) / 100;
+  const intervalMs = observedIntervalMs(bars);
+  const horizons = [...new Set([...HOLD_WINDOW_CANDIDATES, config.horizon])]
+    .filter((horizon) => horizon > 0 && horizon < bars.length)
+    .sort((left, right) => left - right);
+  const minimumIndependentTrades = Math.max(10, config.minSampleSize);
+
+  const candidates: HorizonPerformance[] = horizons.map((horizon) => {
+    const everyMatch = buildTradeOutcomeSummary(
+      bars,
+      matches,
+      direction,
+      horizon,
+    );
+    const independentMatches = nonOverlappingMatches(matches, horizon);
+    const nonOverlapping = buildTradeOutcomeSummary(
+      bars,
+      independentMatches,
+      direction,
+      horizon,
+    );
+    const grossMoves = directionAdjustedMoves(
+      bars,
+      independentMatches,
+      direction,
+      horizon,
+    );
+    const netMoves = grossMoves.map((move) => move - roundTripCostPct);
+    const avgNetMove = mean(netMoves);
+    const deviation = sampleDeviation(netMoves, avgNetMove);
+    const split = Math.floor(netMoves.length / 2);
+    const early = netMoves.slice(0, split);
+    const late = netMoves.slice(split);
+    const winRate = (values: number[]) =>
+      values.length > 0
+        ? (values.filter((value) => value > 0).length / values.length) * 100
+        : 0;
+    const stabilityDeltaPp = Math.abs(winRate(early) - winRate(late));
+    const baseline = baselineWinRates(bars, horizon)[
+      direction === "bearish" ? "bearish" : "bullish"
+    ];
+    const liftVsBaseline = nonOverlapping.winRate - baseline;
+    const excursions = excursionSummary(
+      bars,
+      independentMatches,
+      direction,
+      horizon,
+    );
+    const maxDrawdown = maximumDrawdown(netMoves);
+    const evidence = Math.sqrt(Math.max(1, nonOverlapping.sampleSize));
+    const signalToNoise =
+      deviation > 1e-6
+        ? avgNetMove / deviation
+        : avgNetMove > 0
+          ? avgNetMove / 0.01
+          : avgNetMove;
+    const stabilityWeight = 1 / (1 + stabilityDeltaPp / 20);
+    const drawdownWeight =
+      1 / (1 + maxDrawdown / Math.max(0.05, Math.abs(avgNetMove)));
+    const timeWeight = 1 / Math.sqrt(horizon);
+    const recommendationScore =
+      signalToNoise * evidence * stabilityWeight * drawdownWeight * timeWeight +
+      Math.max(0, liftVsBaseline) / 100;
+    const eligible =
+      nonOverlapping.sampleSize >= minimumIndependentTrades &&
+      avgNetMove > 0 &&
+      liftVsBaseline >= 5 &&
+      nonOverlapping.winRate >= config.minWinRate;
+    return {
+      horizon,
+      durationMs: intervalMs * horizon,
+      everyMatch,
+      nonOverlapping,
+      avgMFE: excursions.avgMFE,
+      avgMAE: excursions.avgMAE,
+      mfeMaeRatio: excursions.ratio,
+      avgNetMove,
+      maxDrawdown,
+      stabilityDeltaPp,
+      baselineWinRate: baseline,
+      liftVsBaseline,
+      recommendationScore,
+      eligible,
+    };
+  });
+
+  const eligible = candidates.filter((candidate) => candidate.eligible);
+  const ranked = [...(eligible.length > 0 ? eligible : candidates)].sort(
+    (left, right) =>
+      right.recommendationScore - left.recommendationScore ||
+      left.horizon - right.horizon,
+  );
+  const recommended = ranked[0] ?? {
+    horizon: config.horizon,
+    durationMs: intervalMs * config.horizon,
+    nonOverlapping: { sampleSize: 0, winRate: 0, avgGrossMove: 0 },
+    avgNetMove: 0,
+    maxDrawdown: 0,
+    stabilityDeltaPp: 0,
+  };
+  return {
+    recommendedHorizon: recommended.horizon,
+    recommendedDurationMs: recommended.durationMs,
+    roundTripCostBps: config.roundTripCostBps ?? 0,
+    rationale: `${eligible.length === 0 ? `No horizon met the minimum ${minimumIndependentTrades}-trade, ${config.minWinRate.toFixed(1)}% win-rate, positive-net, and 5pp-lift requirements; this is the strongest fallback, not an executable recommendation. ` : ""}${recommended.horizon} bars produced ${recommended.nonOverlapping.sampleSize} non-overlapping trades, ${recommended.nonOverlapping.winRate.toFixed(1)}% wins, ${recommended.avgNetMove >= 0 ? "+" : ""}${recommended.avgNetMove.toFixed(3)}% average net movement, ${recommended.maxDrawdown.toFixed(2)}% sequential drawdown, and ${recommended.stabilityDeltaPp.toFixed(1)}pp early/late win-rate variation.`,
+    candidates,
   };
 }
 
@@ -1453,16 +1673,31 @@ export async function runDiscovery(
     estimatedRemainingMs: 0,
   });
 
-  // ---- Hold-window auto-find (grid-search the outcome horizon) ----
-  // When enabled, mirror the Max Data probe: iterate candidate hold-window
-  // lengths, run the full evaluation pipeline for each, score the surviving
-  // pattern set, and pick the value that yields the best quality. The
-  // winning horizon is then used as the effective horizon for the final run.
-  const HOLD_WINDOW_GRID = [1, 2, 3, 5, 8, 12, 13, 21];
+  // ---- Hold-window auto-find (multi-horizon candidate discovery) ----
+  // Search every hold so short-lived setups are not discarded merely because
+  // another pattern family favors a longer outcome window. A global winner
+  // is retained only as the final audit/search seed; candidates from every
+  // probe are pooled and receive their own execution recommendation below.
   let effectiveHorizon = config.horizon;
+  const horizonProbePool: Pattern[] = [];
   if (config.holdWindowAutoFind) {
+    // Probe each horizon with a representative bounded subset, then run the
+    // resolved seed horizon at the full requested budget. Without this bound,
+    // 50k combinations × 8 horizons would silently become 400k full scans.
+    const probeBudget = Math.min(cap, Math.max(5_000, Math.floor(cap / 5)));
+    const probePriorityCap = Math.min(
+      priority.combinations.length,
+      Math.max(1_000, Math.floor(probeBudget * 0.5)),
+    );
+    const probePriority = priority.combinations.slice(0, probePriorityCap);
+    const probeGeneralCap = Math.max(0, probeBudget - probePriority.length);
+    const probeDepthCaps = perDepth.map((count) =>
+      totalCombos > 0 && probeGeneralCap > 0
+        ? Math.max(1, Math.round((count / totalCombos) * probeGeneralCap))
+        : 0,
+    );
     onProgress({
-      total: HOLD_WINDOW_GRID.length,
+      total: HOLD_WINDOW_CANDIDATES.length,
       tested: 0,
       current: "Auto-finding hold window…",
       isRunning: true,
@@ -1470,7 +1705,7 @@ export async function runDiscovery(
     });
     let bestHoldScore = Number.NEGATIVE_INFINITY;
     let bestHold = config.horizon;
-    for (let hi = 0; hi < HOLD_WINDOW_GRID.length; hi++) {
+    for (let hi = 0; hi < HOLD_WINDOW_CANDIDATES.length; hi++) {
       if (shouldCancel()) {
         onProgress({
           total: cap,
@@ -1481,14 +1716,14 @@ export async function runDiscovery(
         });
         return [];
       }
-      const hw = HOLD_WINDOW_GRID[hi];
+      const hw = HOLD_WINDOW_CANDIDATES[hi];
       const probePatterns = await evaluateAllPatterns(
         bars,
         candidates,
         lookups,
         features,
         config,
-        depthCaps,
+        probeDepthCaps,
         depths,
         hw,
         config.mfeMaeWindow,
@@ -1500,17 +1735,18 @@ export async function runDiscovery(
         startTime,
         /* quiet */ true,
         outcomeLabel,
-        priority.combinations,
+        probePriority,
       );
+      horizonProbePool.push(...probePatterns);
       const score = scorePatternSet(probePatterns, config.minSampleSize);
       if (score > bestHoldScore) {
         bestHoldScore = score;
         bestHold = hw;
       }
       onProgress({
-        total: HOLD_WINDOW_GRID.length,
+        total: HOLD_WINDOW_CANDIDATES.length,
         tested: hi + 1,
-        current: `Auto-finding hold window (${hi + 1}/${HOLD_WINDOW_GRID.length})`,
+        current: `Collecting multi-horizon candidates (${hi + 1}/${HOLD_WINDOW_CANDIDATES.length})`,
         isRunning: true,
         estimatedRemainingMs: 0,
       });
@@ -1608,7 +1844,7 @@ export async function runDiscovery(
         },
       }
     : undefined;
-  const patterns = await evaluateAllPatterns(
+  let patterns = await evaluateAllPatterns(
     bars,
     candidates,
     lookups,
@@ -1631,8 +1867,128 @@ export async function runDiscovery(
 
   if (onAudit && finalAudit) onAudit(finalAudit);
 
+  // Auto mode discovers candidate conditions at every horizon instead of
+  // discarding every probe except one global winner. This allows a setup
+  // whose edge peaks at 3 or 5 bars to survive even when a different pattern
+  // family performs best at 21 bars.
+  if (config.holdWindowAutoFind && horizonProbePool.length > 0) {
+    const unique = new Map<string, Pattern>();
+    for (const pattern of [...patterns, ...horizonProbePool]) {
+      const key = `${conditionKey(pattern.conditions)}|${pattern.direction}`;
+      const previous = unique.get(key);
+      if (!previous || pattern.score > previous.score) unique.set(key, pattern);
+    }
+    patterns = [...unique.values()]
+      .sort((left, right) => right.score - left.score)
+      .slice(0, 500);
+  }
+
+  // Build one executable hold curve per retained pattern. Conditions are
+  // matched once, then replayed across every candidate horizon. In auto mode
+  // the recommended horizon becomes the pattern's primary reported outcome;
+  // manual mode preserves the chosen hold while still exposing the curve.
+  patterns = patterns.map((pattern) => {
+    const matches: number[] = [];
+    for (let index = 0; index < bars.length - 1; index++) {
+      if (matchesAll(pattern.conditions, lookups, index)) matches.push(index);
+    }
+    const horizonAnalysis = analyzePatternHorizons(
+      bars,
+      matches,
+      pattern.direction,
+      config,
+    );
+    const selectedHorizon = config.holdWindowAutoFind
+      ? horizonAnalysis.recommendedHorizon
+      : pattern.horizon;
+    const selected =
+      horizonAnalysis.candidates.find(
+        (candidate) => candidate.horizon === selectedHorizon,
+      ) ?? horizonAnalysis.candidates[0];
+    if (!selected) return { ...pattern, horizonAnalysis };
+    const validMatches = matches.filter(
+      (index) => index + selectedHorizon < bars.length,
+    );
+    const signedAverage =
+      pattern.direction === "bearish"
+        ? -selected.everyMatch.avgGrossMove
+        : selected.everyMatch.avgGrossMove;
+    const metrics: PatternMetrics = {
+      winRate: selected.everyMatch.winRate,
+      avgMove: signedAverage,
+      avgMAE: selected.avgMAE,
+      avgMFE: selected.avgMFE,
+      sampleSize: selected.everyMatch.sampleSize,
+      direction: pattern.direction,
+    };
+    const executionComponent = Math.tanh(selected.recommendationScore / 10);
+    return {
+      ...pattern,
+      horizon: selectedHorizon,
+      horizonAnalysis,
+      winRate: selected.everyMatch.winRate,
+      baselineWinRate: selected.baselineWinRate,
+      liftVsBaseline: selected.liftVsBaseline,
+      avgMove: signedAverage,
+      avgMAE: selected.avgMAE,
+      avgMFE: selected.avgMFE,
+      mfeMaeRatio: selected.mfeMaeRatio ?? undefined,
+      sampleSize: selected.everyMatch.sampleSize,
+      confidence: confidenceRating(
+        selected.everyMatch.winRate,
+        selected.everyMatch.sampleSize,
+        selected.baselineWinRate,
+      ),
+      score: pattern.score * 0.5 + executionComponent * 0.5,
+      plainEnglishSentence: buildPlainEnglishSentence(
+        pattern.conditions,
+        features,
+        pattern.direction,
+        selectedHorizon,
+        outcomeLabel,
+      ),
+      coverage: computePatternCoverage(
+        bars,
+        validMatches,
+        metrics,
+        "",
+        "unknown",
+      ),
+      outcomeProfile: buildOutcomeProfile(
+        bars,
+        validMatches,
+        pattern.direction,
+        selectedHorizon,
+        config.outcomeTargetsPct ?? [0.1, 0.25, 0.5, 1],
+        config.outcomeStopsPct ?? [0.1, 0.25, 0.5, 1],
+      ),
+      executionComparison: {
+        everyMatch: selected.everyMatch,
+        nonOverlapping: selected.nonOverlapping,
+      },
+      reproductionRecipe: buildReproductionRecipe(
+        pattern.conditions,
+        features,
+        selectedHorizon,
+      ),
+    };
+  });
+  patterns = patterns.filter(
+    (pattern) =>
+      pattern.sampleSize >= config.minSampleSize &&
+      pattern.winRate >= config.minWinRate &&
+      (pattern.liftVsBaseline ?? 0) >= 5 &&
+      (ratioMode === "off" ||
+        passesRatioFilter(pattern.mfeMaeRatio ?? 0, effectiveRatioThreshold)),
+  );
+  applyFalseDiscoveryCorrection(patterns, cap);
+
   // Rank by score desc, then sample size desc.
   patterns.sort((a, b) => b.score - a.score || b.sampleSize - a.sampleSize);
+  patterns = patterns.map((pattern, index) => ({
+    ...pattern,
+    id: `p_${index}`,
+  }));
 
   onProgress({
     total: cap,
