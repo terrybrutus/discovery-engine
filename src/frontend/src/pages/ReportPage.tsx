@@ -2,6 +2,10 @@ import { EmptyState } from "@/components/EmptyState";
 import { ResearchInterpreter } from "@/components/ResearchInterpreter";
 import { Button } from "@/components/ui/button";
 import {
+  formatPatternHorizon,
+  formatPatternTarget,
+} from "@/lib/patternPresentation";
+import {
   patternSymbolEntries,
   summarizeSymbolAttribution,
 } from "@/lib/symbolAttribution";
@@ -501,6 +505,7 @@ function PatternTable({
           <tr className="border-b border-border bg-muted/40 text-left">
             <Th className="w-8 text-right">#</Th>
             <Th>Pattern</Th>
+            <Th className="min-w-44">Outcome target</Th>
             <Th className="w-24">Direction</Th>
             <Th className="w-24 text-right">Win Rate</Th>
             <Th className="w-28 text-right">MFE/MAE Ratio</Th>
@@ -529,6 +534,16 @@ function PatternTable({
                   <span className="text-foreground">
                     {p.label.replace(/^When\s+/i, "")}
                   </span>
+                </Td>
+                <Td>
+                  <div className="flex flex-col font-mono text-[11px]">
+                    <span className="text-foreground">
+                      {formatPatternTarget(p)}
+                    </span>
+                    <span className="text-muted-foreground">
+                      {formatPatternHorizon(p)}
+                    </span>
+                  </div>
                 </Td>
                 <Td>
                   <DirectionBadge direction={p.direction} />

@@ -12,6 +12,10 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { adjustForCosts, selectedExecutionSummary } from "@/lib/costAnalysis";
+import {
+  formatPatternHorizon,
+  formatPatternTarget,
+} from "@/lib/patternPresentation";
 import { cn } from "@/lib/utils";
 import type { Confidence, Pattern } from "@/types";
 import {
@@ -316,7 +320,12 @@ export function PatternResultsTable({
                     <span className="flex items-center gap-1.5">
                       {p.targetDatasetLabel ? (
                         <span className="rounded border border-border px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
-                          target: {p.targetTimeframe} · {p.targetDatasetLabel}
+                          outcome: {formatPatternTarget(p)}
+                        </span>
+                      ) : null}
+                      {p.searchTier === "event-priority" ? (
+                        <span className="rounded border border-primary/40 bg-primary/5 px-1.5 py-0.5 text-[10px] font-mono text-primary">
+                          structural/event search
                         </span>
                       ) : null}
                       <span
@@ -339,7 +348,7 @@ export function PatternResultsTable({
                         {p.direction}
                       </span>
                       <span className="text-[10px] text-muted-foreground">
-                        · {p.horizon}-bar hold
+                        · {formatPatternHorizon(p)}
                       </span>
                       {p.liftVsBaseline != null ? (
                         <span className="text-[10px] font-mono text-primary">

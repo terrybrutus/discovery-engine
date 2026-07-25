@@ -11,6 +11,7 @@ import type {
   Direction,
   DiscoveryConfig,
   DiscoveryProgress,
+  DiscoverySearchAudit,
   Feature,
   FeatureMatrix,
   OHLCVBar,
@@ -1125,6 +1126,176 @@ function scorePatternSet(patterns: Pattern[], minSampleSize: number): number {
   return edge * Math.log10(Math.max(10, totalSamples)) + patterns.length * 0.01;
 }
 
+const PRIORITY_TRIGGER_FEATURES = new Set([
+  "pivot_event",
+  "break_of_structure",
+  "liquidity_sweep",
+  "prev_day_level_event",
+  "box_event",
+  "or_breakout",
+  "structure_event_sequence",
+  "sweep_reclaim_sequence",
+  "break_retest_sequence",
+]);
+
+const PRIORITY_CONTEXT_FEATURES = new Set([
+  "candle_direction",
+  "swing_sequence",
+  "structure_state",
+  "prev_day_level_state",
+  "pivot_event",
+  "break_of_structure",
+  "liquidity_sweep",
+  "prev_day_level_event",
+  "box_event",
+  "or_breakout",
+  "structure_event_sequence",
+  "sweep_reclaim_sequence",
+  "break_retest_sequence",
+]);
+
+function baseFeatureId(featureId: string): string {
+  const parts = featureId.split("__");
+  return parts[parts.length - 1] ?? featureId;
+}
+
+function isInactiveState(condition: Condition): boolean {
+  const label = condition.bucketLabel?.toLowerCase();
+  return (
+    label === "none" ||
+    label === "neutral" ||
+    label === "inside prior range" ||
+    label === "no prior-range sweep"
+  );
+}
+
+function conditionKey(conditions: Condition[]): string {
+  return [...conditions]
+    .map((condition) => JSON.stringify(condition))
+    .sort()
+    .join("|");
+}
+
+/**
+ * Structural events are rare in the full threshold pool, so a uniform sample
+ * can miss the exact event + cross-source state combination. Build a bounded,
+ * deterministic first-pass directly from the uploaded feature lineage.
+ * Dataset ids and timeframes are never named here: every source group comes
+ * from Feature.originDatasetId assigned by the alignment layer.
+ */
+export function buildEventPriorityCombinations(
+  candidates: Condition[],
+  features: Feature[],
+  maxDepth: number,
+  budget: number,
+): { combinations: Condition[][]; eligibleCount: number; skipped: number } {
+  if (budget <= 0 || maxDepth < 2) {
+    return { combinations: [], eligibleCount: 0, skipped: 0 };
+  }
+  const featureById = new Map(features.map((feature) => [feature.id, feature]));
+  const bySource = new Map<
+    string,
+    { triggers: Condition[]; contexts: Condition[] }
+  >();
+  for (const condition of candidates) {
+    const feature = featureById.get(condition.featureId);
+    const source = feature?.originDatasetId;
+    if (!feature || !source || isInactiveState(condition)) continue;
+    const baseId = baseFeatureId(feature.id);
+    const entry = bySource.get(source) ?? { triggers: [], contexts: [] };
+    if (PRIORITY_TRIGGER_FEATURES.has(baseId)) entry.triggers.push(condition);
+    if (PRIORITY_CONTEXT_FEATURES.has(baseId)) entry.contexts.push(condition);
+    bySource.set(source, entry);
+  }
+
+  const sources = [...bySource.keys()].sort();
+  const groups: { count: number; at: (index: number) => Condition[] }[] = [];
+  for (const triggerSource of sources) {
+    const triggerSet = bySource.get(triggerSource)?.triggers ?? [];
+    for (const contextSource of sources) {
+      if (contextSource === triggerSource) continue;
+      const contexts = bySource.get(contextSource)?.contexts ?? [];
+      const count = triggerSet.length * contexts.length;
+      if (count > 0) {
+        groups.push({
+          count,
+          at: (index) => [
+            triggerSet[index % triggerSet.length],
+            contexts[Math.floor(index / triggerSet.length)],
+          ],
+        });
+      }
+    }
+    if (maxDepth >= 3) {
+      for (let left = 0; left < sources.length; left++) {
+        const sourceA = sources[left];
+        if (sourceA === triggerSource) continue;
+        for (let right = left + 1; right < sources.length; right++) {
+          const sourceB = sources[right];
+          if (sourceB === triggerSource) continue;
+          const contextsA = bySource.get(sourceA)?.contexts ?? [];
+          const contextsB = bySource.get(sourceB)?.contexts ?? [];
+          const count = triggerSet.length * contextsA.length * contextsB.length;
+          if (count > 0) {
+            groups.push({
+              count,
+              at: (index) => {
+                const triggerIndex = index % triggerSet.length;
+                const contextRank = Math.floor(index / triggerSet.length);
+                const contextBIndex = contextRank % contextsB.length;
+                const contextAIndex = Math.floor(
+                  contextRank / contextsB.length,
+                );
+                return [
+                  triggerSet[triggerIndex],
+                  contextsA[contextAIndex],
+                  contextsB[contextBIndex],
+                ];
+              },
+            });
+          }
+        }
+      }
+    }
+  }
+
+  const eligibleCount = groups.reduce(
+    (sum, group) => Math.min(Number.MAX_SAFE_INTEGER, sum + group.count),
+    0,
+  );
+  const combinations: Condition[][] = [];
+  const seen = new Set<string>();
+  // Round-robin lazily across source relationships. No group's Cartesian
+  // product is allocated, which keeps 40+ uploaded datasets memory bounded.
+  let position = 0;
+  while (combinations.length < budget) {
+    const activeGroups = groups.filter((group) => position < group.count);
+    if (activeGroups.length === 0) break;
+    const remaining = budget - combinations.length;
+    const sampleCount = Math.min(activeGroups.length, remaining);
+    const stride = activeGroups.length / sampleCount;
+    let added = false;
+    for (let sample = 0; sample < sampleCount; sample++) {
+      const group = activeGroups[Math.floor(sample * stride)];
+      const combination = group.at(position);
+      const key = conditionKey(combination);
+      if (!seen.has(key)) {
+        seen.add(key);
+        combinations.push(combination);
+        if (combinations.length >= budget) break;
+      }
+      added = true;
+    }
+    if (!added) break;
+    position++;
+  }
+  return {
+    combinations,
+    eligibleCount,
+    skipped: Math.max(0, eligibleCount - combinations.length),
+  };
+}
+
 /**
  * Run pattern discovery. Generates combinations of 2-maxDepth conditions
  * across enabled features, evaluates each, and returns ranked patterns.
@@ -1162,6 +1333,12 @@ export async function runDiscovery(
   shouldCancel: () => boolean,
   featureOverrides: FeatureOverrides = {},
   outcomeLabel = "price",
+  onAudit?: (
+    audit: Omit<
+      DiscoverySearchAudit,
+      "targetDatasetId" | "targetDatasetLabel" | "targetTimeframe"
+    >,
+  ) => void,
 ): Promise<Pattern[]> {
   const availableFeatures = features.filter(
     (f) =>
@@ -1207,9 +1384,23 @@ export async function runDiscovery(
 
   // Cap total combinations.
   const cap = Math.min(config.maxCombinations, totalCombos);
+  const priorityBudget = Math.min(
+    cap,
+    15_000,
+    Math.max(1_000, Math.floor(cap * 0.5)),
+  );
+  const priority = buildEventPriorityCombinations(
+    candidates,
+    features,
+    config.maxDepth,
+    priorityBudget,
+  );
+  const generalCap = Math.max(0, cap - priority.combinations.length);
   // Distribute the cap across depths proportionally.
   const depthCaps = perDepth.map((n) =>
-    totalCombos > 0 ? Math.max(1, Math.round((n / totalCombos) * cap)) : 0,
+    totalCombos > 0 && generalCap > 0
+      ? Math.max(1, Math.round((n / totalCombos) * generalCap))
+      : 0,
   );
 
   const startTime = Date.now();
@@ -1269,6 +1460,7 @@ export async function runDiscovery(
         startTime,
         /* quiet */ true,
         outcomeLabel,
+        priority.combinations,
       );
       const score = scorePatternSet(probePatterns, config.minSampleSize);
       if (score > bestHoldScore) {
@@ -1336,6 +1528,7 @@ export async function runDiscovery(
         startTime,
         /* quiet */ true,
         outcomeLabel,
+        priority.combinations,
       );
       const score = scorePatternSet(probePatterns, config.minSampleSize);
       if (score > bestRatioScore) {
@@ -1355,6 +1548,26 @@ export async function runDiscovery(
   }
 
   // ---- Final evaluation pass with the resolved settings ----
+  const finalAudit = onAudit
+    ? {
+        priorityPlanned: priority.combinations.length,
+        priorityTested: 0,
+        priorityAccepted: 0,
+        generalTested: 0,
+        skippedByBudget: priority.skipped,
+        rejected: {
+          duplicateFeature: 0,
+          insufficientConfluence: 0,
+          noOutcome: 0,
+          smallSample: 0,
+          weakWinRate: 0,
+          weakLift: 0,
+          redundantCondition: 0,
+          weakExcursion: 0,
+          duplicatePattern: 0,
+        },
+      }
+    : undefined;
   const patterns = await evaluateAllPatterns(
     bars,
     candidates,
@@ -1372,7 +1585,11 @@ export async function runDiscovery(
     startTime,
     /* quiet */ false,
     outcomeLabel,
+    priority.combinations,
+    finalAudit,
   );
+
+  if (onAudit && finalAudit) onAudit(finalAudit);
 
   // Rank by score desc, then sample size desc.
   patterns.sort((a, b) => b.score - a.score || b.sampleSize - a.sampleSize);
@@ -1418,6 +1635,11 @@ async function evaluateAllPatterns(
   startTime: number,
   quiet: boolean,
   outcomeLabel: string,
+  priorityCombinations: Condition[][] = [],
+  audit?: Omit<
+    DiscoverySearchAudit,
+    "targetDatasetId" | "targetDatasetLabel" | "targetTimeframe"
+  >,
 ): Promise<Pattern[]> {
   const patterns: Pattern[] = [];
   const seenMatchSets = new Set<string>();
@@ -1436,17 +1658,172 @@ async function evaluateAllPatterns(
   let lastYieldTime = startTime;
   let sinceLastYield = 0;
 
-  const totalCap = depthCaps.reduce((a, b) => a + b, 0);
+  const generalKeys = new Set(priorityCombinations.map(conditionKey));
+  const totalCap =
+    priorityCombinations.length + depthCaps.reduce((a, b) => a + b, 0);
 
-  for (let di = 0; di < depths.length; di++) {
-    const depth = depths[di];
-    const depthCap = depthCaps[di];
-    if (depthCap <= 0) continue;
+  const evaluateConditions = (
+    conds: Condition[],
+    tier: Pattern["searchTier"],
+  ): void => {
+    const isPriority = tier === "event-priority";
+    if (isPriority && audit) audit.priorityTested++;
+    if (!isPriority && audit) audit.generalTested++;
 
-    // Lazy, capped combination stream — never materializes the full nCk.
-    const comboStream = iterateCombinations(candidates, depth, depthCap);
+    const featIds = new Set(conds.map((condition) => condition.featureId));
+    if (featIds.size !== conds.length) {
+      if (isPriority && audit) audit.rejected.duplicateFeature++;
+      return;
+    }
+    if (
+      !meetsConfluenceRequirement(conds, features, minimumConfluenceSources)
+    ) {
+      if (isPriority && audit) audit.rejected.insufficientConfluence++;
+      return;
+    }
+    const confluence = resolvePatternConfluence(conds, features);
+    const result = evaluatePattern(bars, conds, lookups, horizon, mfeMaeWindow);
+    if (!result) {
+      if (isPriority && audit) audit.rejected.noOutcome++;
+      return;
+    }
+    if (result.metrics.sampleSize < config.minSampleSize) {
+      if (isPriority && audit) audit.rejected.smallSample++;
+      return;
+    }
+    const baseline =
+      result.metrics.direction === "bearish"
+        ? baselines.bearish
+        : baselines.bullish;
+    const lift = result.metrics.winRate - baseline;
+    if (result.metrics.winRate < config.minWinRate) {
+      if (isPriority && audit) audit.rejected.weakWinRate++;
+      return;
+    }
+    if (lift < 3) {
+      if (isPriority && audit) audit.rejected.weakLift++;
+      return;
+    }
+    if (
+      !everyConditionAddsValue(
+        bars,
+        conds,
+        result,
+        lookups,
+        horizon,
+        mfeMaeWindow,
+      )
+    ) {
+      if (isPriority && audit) audit.rejected.redundantCondition++;
+      return;
+    }
+    if (
+      ratioMode !== "off" &&
+      !passesRatioFilter(result.mfeMaeRatio, ratioThreshold)
+    ) {
+      if (isPriority && audit) audit.rejected.weakExcursion++;
+      return;
+    }
+    const matchSetKey = result.matches.join(",");
+    const isNearDuplicate = keptMatchSets.some(
+      (matches) =>
+        Math.abs(matches.length - result.matches.length) /
+          Math.max(matches.length, result.matches.length) <=
+          0.1 && matchSetSimilarity(matches, result.matches) >= 0.95,
+    );
+    if (seenMatchSets.has(matchSetKey) || isNearDuplicate) {
+      if (isPriority && audit) audit.rejected.duplicatePattern++;
+      return;
+    }
+    seenMatchSets.add(matchSetKey);
+    keptMatchSets.push(result.matches);
+    const score = scorePattern(
+      result.metrics.winRate,
+      result.metrics.sampleSize,
+      lift,
+    );
+    patterns.push({
+      id: `p_${patterns.length}`,
+      searchTier: tier,
+      conditions: conds,
+      label: patternLabel(conds, features),
+      plainEnglishSentence: buildPlainEnglishSentence(
+        conds,
+        features,
+        result.metrics.direction,
+        horizon,
+        outcomeLabel,
+      ),
+      coverage: computePatternCoverage(
+        bars,
+        result.matches,
+        result.metrics,
+        "",
+        "unknown",
+      ),
+      direction: result.metrics.direction,
+      winRate: result.metrics.winRate,
+      baselineWinRate: baseline,
+      liftVsBaseline: lift,
+      avgMove: result.metrics.avgMove,
+      avgMAE: result.metrics.avgMAE,
+      avgMFE: result.metrics.avgMFE,
+      mfeMaeRatio: Number.isFinite(result.mfeMaeRatio)
+        ? result.mfeMaeRatio
+        : undefined,
+      sampleSize: result.metrics.sampleSize,
+      confidence: confidenceRating(
+        result.metrics.winRate,
+        result.metrics.sampleSize,
+        baseline,
+      ),
+      score,
+      horizon,
+      outcomeProfile: buildOutcomeProfile(
+        bars,
+        result.matches,
+        result.metrics.direction,
+        horizon,
+        config.outcomeTargetsPct ?? [0.1, 0.25, 0.5, 1],
+        config.outcomeStopsPct ?? [0.1, 0.25, 0.5, 1],
+      ),
+      executionComparison: buildExecutionComparison(
+        bars,
+        result.matches,
+        result.metrics.direction,
+        horizon,
+      ),
+      reproductionRecipe: buildReproductionRecipe(conds, features, horizon),
+      confluenceDatasetIds: confluence.datasetIds,
+      confluenceTimeframes: confluence.timeframes,
+    });
+    if (isPriority && audit) audit.priorityAccepted++;
+  };
+
+  const streams: {
+    tier: Pattern["searchTier"];
+    depth: number;
+    cap: number;
+    values: Iterable<Condition[]>;
+  }[] = [
+    {
+      tier: "event-priority",
+      depth: 0,
+      cap: priorityCombinations.length,
+      values: priorityCombinations,
+    },
+    ...depths.map((depth, index) => ({
+      tier: "general" as const,
+      depth,
+      cap: depthCaps[index],
+      values: iterateCombinations(candidates, depth, depthCaps[index]),
+    })),
+  ];
+
+  for (const stream of streams) {
+    if (stream.cap <= 0) continue;
     let ci = 0;
-    for (const conds of comboStream) {
+    for (const conds of stream.values) {
       if (shouldCancel()) {
         if (!quiet) {
           onProgress({
@@ -1459,141 +1836,14 @@ async function evaluateAllPatterns(
         }
         return patterns;
       }
-
-      // Skip combinations that reuse the same feature twice.
-      const featIds = new Set(conds.map((c) => c.featureId));
-      if (featIds.size !== conds.length) {
+      if (stream.tier === "general" && generalKeys.has(conditionKey(conds))) {
         tested++;
         ci++;
         continue;
       }
-      if (
-        !meetsConfluenceRequirement(conds, features, minimumConfluenceSources)
-      ) {
-        tested++;
-        ci++;
-        continue;
-      }
-      const confluence = resolvePatternConfluence(conds, features);
-
-      const result = evaluatePattern(
-        bars,
-        conds,
-        lookups,
-        horizon,
-        mfeMaeWindow,
-      );
+      evaluateConditions(conds, stream.tier);
       tested++;
       ci++;
-
-      if (result && result.metrics.sampleSize >= config.minSampleSize) {
-        const baseline =
-          result.metrics.direction === "bearish"
-            ? baselines.bearish
-            : baselines.bullish;
-        const lift = result.metrics.winRate - baseline;
-        if (
-          result.metrics.winRate >= config.minWinRate &&
-          lift >= 3 &&
-          everyConditionAddsValue(
-            bars,
-            conds,
-            result,
-            lookups,
-            horizon,
-            mfeMaeWindow,
-          )
-        ) {
-          // MFE/MAE ratio filter. "off" skips entirely; "positive" applies
-          // the (possibly auto-found) threshold to the direction-adjusted
-          // ratio. Infinity (zero MAE) passes any finite threshold; only a
-          // finite ratio at or below the threshold fails.
-          const ratioOk =
-            ratioMode === "off" ||
-            passesRatioFilter(result.mfeMaeRatio, ratioThreshold);
-          if (ratioOk) {
-            const matchSetKey = result.matches.join(",");
-            const isNearDuplicate = keptMatchSets.some(
-              (matches) =>
-                Math.abs(matches.length - result.matches.length) /
-                  Math.max(matches.length, result.matches.length) <=
-                  0.1 && matchSetSimilarity(matches, result.matches) >= 0.95,
-            );
-            if (!seenMatchSets.has(matchSetKey) && !isNearDuplicate) {
-              seenMatchSets.add(matchSetKey);
-              keptMatchSets.push(result.matches);
-              const score = scorePattern(
-                result.metrics.winRate,
-                result.metrics.sampleSize,
-                lift,
-              );
-              const sentence = buildPlainEnglishSentence(
-                conds,
-                features,
-                result.metrics.direction,
-                horizon,
-                outcomeLabel,
-              );
-              const coverage = computePatternCoverage(
-                bars,
-                result.matches,
-                result.metrics,
-                /* datasetName */ "",
-                /* timeframe */ "unknown",
-              );
-              patterns.push({
-                id: `p_${patterns.length}`,
-                conditions: conds,
-                label: patternLabel(conds, features),
-                plainEnglishSentence: sentence,
-                coverage,
-                direction: result.metrics.direction,
-                winRate: result.metrics.winRate,
-                baselineWinRate: baseline,
-                liftVsBaseline: lift,
-                avgMove: result.metrics.avgMove,
-                avgMAE: result.metrics.avgMAE,
-                avgMFE: result.metrics.avgMFE,
-                // Carry the direction-adjusted ratio through to the pattern.
-                // Infinity (zero MAE) is stored as undefined so the field stays
-                // a finite, serializable number for persistence + UI.
-                mfeMaeRatio: Number.isFinite(result.mfeMaeRatio)
-                  ? result.mfeMaeRatio
-                  : undefined,
-                sampleSize: result.metrics.sampleSize,
-                confidence: confidenceRating(
-                  result.metrics.winRate,
-                  result.metrics.sampleSize,
-                  baseline,
-                ),
-                score,
-                horizon,
-                outcomeProfile: buildOutcomeProfile(
-                  bars,
-                  result.matches,
-                  result.metrics.direction,
-                  horizon,
-                  config.outcomeTargetsPct ?? [0.1, 0.25, 0.5, 1],
-                  config.outcomeStopsPct ?? [0.1, 0.25, 0.5, 1],
-                ),
-                executionComparison: buildExecutionComparison(
-                  bars,
-                  result.matches,
-                  result.metrics.direction,
-                  horizon,
-                ),
-                reproductionRecipe: buildReproductionRecipe(
-                  conds,
-                  features,
-                  horizon,
-                ),
-                confluenceDatasetIds: confluence.datasetIds,
-                confluenceTimeframes: confluence.timeframes,
-              });
-            }
-          }
-        }
-      }
 
       // Yield to the event loop + report progress every YIELD_EVERY combos
       // or every YIELD_INTERVAL_MS, whichever comes first. The await on a
@@ -1611,7 +1861,10 @@ async function evaluateAllPatterns(
           onProgress({
             total: totalCap,
             tested,
-            current: `Testing depth-${depth} combination ${ci}/${depthCap}`,
+            current:
+              stream.tier === "event-priority"
+                ? `Testing structural/event confluence ${ci}/${stream.cap}`
+                : `Testing depth-${stream.depth} combination ${ci}/${stream.cap}`,
             isRunning: true,
             estimatedRemainingMs: remaining,
           });

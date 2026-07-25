@@ -15,7 +15,7 @@ import {
 import { Progress } from "@/components/ui/progress";
 import { passesEconomicFilter } from "@/lib/costAnalysis";
 import { useEngineStore } from "@/store/engineStore";
-import type { Pattern, SavedRunSummary } from "@/types";
+import type { DiscoverySearchAudit, Pattern, SavedRunSummary } from "@/types";
 import { useActor, useInternetIdentity } from "@caffeineai/core-infrastructure";
 import {
   ChevronDown,
@@ -40,6 +40,33 @@ function formatDuration(ms: number): string {
   return `${m}m ${rem}s`;
 }
 
+function formatPriorityRejections(audit: DiscoverySearchAudit): string {
+  const labels: Record<keyof DiscoverySearchAudit["rejected"], string> = {
+    duplicateFeature: "repeated feature",
+    insufficientConfluence: "insufficient confluence",
+    noOutcome: "no usable outcome",
+    smallSample: "sample too small",
+    weakWinRate: "win rate",
+    weakLift: "baseline lift",
+    redundantCondition: "condition added no edge",
+    weakExcursion: "MFE/MAE",
+    duplicatePattern: "duplicate result",
+  };
+  const ranked = Object.entries(audit.rejected)
+    .filter(([, count]) => count > 0)
+    .sort((left, right) => right[1] - left[1]);
+  const total = ranked.reduce((sum, [, count]) => sum + count, 0);
+  if (total === 0) return "0 rejected";
+  const mainReasons = ranked
+    .slice(0, 3)
+    .map(
+      ([key, count]) =>
+        `${labels[key as keyof DiscoverySearchAudit["rejected"]]} ${count.toLocaleString()}`,
+    )
+    .join(", ");
+  return `${total.toLocaleString()} rejected (${mainReasons})`;
+}
+
 /**
  * Pattern Discovery tab — the core of the engine. Hosts the controls panel,
  * a progress indicator while discovery runs, a ranked results table, and
@@ -49,6 +76,7 @@ function formatDuration(ms: number): string {
 export default function PatternDiscoveryPage() {
   const features = useEngineStore((s) => s.features);
   const patterns = useEngineStore((s) => s.patterns);
+  const discoverySearchAudits = useEngineStore((s) => s.discoverySearchAudits);
   const discoveryProgress = useEngineStore((s) => s.discoveryProgress);
   const isComputing = useEngineStore((s) => s.isComputing);
   const completedSteps = useEngineStore((s) => s.completedSteps);
@@ -462,6 +490,52 @@ export default function PatternDiscoveryPage() {
                 combination{discoveryProgress.tested === 1 ? "" : "s"} tested.
               </p>
             </div>
+          ) : null}
+
+          {discoverySearchAudits.length > 0 && !isRunning ? (
+            <Card data-ocid="page.discovery.search_audit">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">Search coverage audit</CardTitle>
+              </CardHeader>
+              <CardContent className="grid gap-2 text-xs sm:grid-cols-2 xl:grid-cols-3">
+                {discoverySearchAudits.map((audit) => (
+                  <div
+                    key={audit.targetDatasetId}
+                    className="rounded-md border border-border bg-muted/20 p-3"
+                  >
+                    <p className="font-medium text-foreground">
+                      Outcome: {audit.targetTimeframe} ·{" "}
+                      {audit.targetDatasetLabel}
+                    </p>
+                    <p className="mt-1 text-muted-foreground">
+                      Structural/event confluence:{" "}
+                      <span className="font-mono text-foreground">
+                        {audit.priorityTested.toLocaleString()}
+                      </span>{" "}
+                      tested,{" "}
+                      <span className="font-mono text-primary">
+                        {audit.priorityAccepted.toLocaleString()}
+                      </span>{" "}
+                      accepted. Broad search:{" "}
+                      <span className="font-mono text-foreground">
+                        {audit.generalTested.toLocaleString()}
+                      </span>{" "}
+                      tested.
+                    </p>
+                    <p className="mt-1 text-muted-foreground">
+                      {formatPriorityRejections(audit)}.
+                    </p>
+                    {audit.skippedByBudget > 0 ? (
+                      <p className="mt-1 text-warning">
+                        {audit.skippedByBudget.toLocaleString()} additional
+                        structural combinations were outside this run&apos;s
+                        budget; increase combinations to inspect more.
+                      </p>
+                    ) : null}
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
           ) : null}
 
           {/* Results table or pre-run empty state */}

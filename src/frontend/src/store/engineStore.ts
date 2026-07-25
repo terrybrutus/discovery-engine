@@ -11,6 +11,7 @@ import {
   buildMultiTimeframeResearchSpace,
   datasetIntervalMs,
 } from "@/lib/multiTimeframe";
+import { selectBalancedPatterns } from "@/lib/patternSelection";
 import { generateReport } from "@/lib/report";
 import {
   collectResearchCategories,
@@ -28,6 +29,7 @@ import type {
   Dataset,
   DiscoveryConfig,
   DiscoveryProgress,
+  DiscoverySearchAudit,
   Feature,
   FeatureCategory,
   FeatureMatrix,
@@ -106,6 +108,7 @@ interface EngineState {
   researchContextDatasetIds: string[];
   researchTotalBars: number;
   patterns: Pattern[];
+  discoverySearchAudits: DiscoverySearchAudit[];
   validationResults: ValidationResult[];
   /** Cross-timeframe correlation results across multiple datasets. */
   crossReferenceResults: CrossReferenceResult[];
@@ -458,6 +461,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
   researchContextDatasetIds: [],
   researchTotalBars: 0,
   patterns: [],
+  discoverySearchAudits: [],
   validationResults: [],
   crossReferenceResults: [],
   isCrossReferencing: false,
@@ -599,6 +603,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
           ? [...state.selectedDatasetIds, state.activeDatasetId]
           : state.selectedDatasetIds,
       patterns: [],
+      discoverySearchAudits: [],
       validationResults: [],
       report: null,
       discoveryProgress: DEFAULT_PROGRESS,
@@ -815,6 +820,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
       lastError: null,
       discoveryProgress: { ...DEFAULT_PROGRESS, isRunning: true },
       patterns: [],
+      discoverySearchAudits: [],
       researchFeatures: [],
       researchFeatureValues: null,
       researchContextDatasetIds: selectedDatasets
@@ -828,6 +834,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
 
     try {
       const allPatterns: Pattern[] = [];
+      const allSearchAudits: DiscoverySearchAudit[] = [];
       const allValidationResults: ValidationResult[] = [];
       const budgetPerTarget = Math.max(
         1,
@@ -883,6 +890,14 @@ export const useEngineStore = create<EngineState>((set, get) => ({
           () => cancelFlag.cancelled,
           get().featureOverrides,
           target.outcomeLabel,
+          (audit) => {
+            allSearchAudits.push({
+              ...audit,
+              targetDatasetId: target.id,
+              targetDatasetLabel: targetLabel,
+              targetTimeframe: target.timeframe,
+            });
+          },
         );
         if (cancelFlag.cancelled) break;
         const tagged = discovered.map((pattern) => ({
@@ -891,6 +906,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
           targetDatasetId: target.id,
           targetDatasetLabel: targetLabel,
           targetTimeframe: target.timeframe,
+          targetIntervalMs: datasetIntervalMs(target),
           coverage: pattern.coverage
             ? {
                 ...pattern.coverage,
@@ -957,7 +973,8 @@ export const useEngineStore = create<EngineState>((set, get) => ({
       completed.add("discoveryComplete");
       completed.add("validationComplete");
       set({
-        patterns: allPatterns.sort((a, b) => b.score - a.score).slice(0, 100),
+        patterns: selectBalancedPatterns(allPatterns, 100),
+        discoverySearchAudits: allSearchAudits,
         validationResults: allValidationResults,
         isComputing: false,
         discoveryProgress: { ...get().discoveryProgress, isRunning: false },
@@ -1156,6 +1173,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
       researchContextDatasetIds: [],
       researchTotalBars: 0,
       patterns: [],
+      discoverySearchAudits: [],
       validationResults: [],
       crossReferenceResults: [],
       isCrossReferencing: false,
@@ -1422,6 +1440,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         researchFeatures: [],
         researchFeatureValues: null,
         researchContextDatasetIds: [],
+        discoverySearchAudits: [],
         researchTotalBars: 0,
         patterns: restoredPatterns,
         validationResults: restoredValidationResults,

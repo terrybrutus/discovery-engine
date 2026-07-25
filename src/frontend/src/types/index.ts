@@ -302,6 +302,10 @@ export interface Pattern {
   targetDatasetId?: string;
   targetDatasetLabel?: string;
   targetTimeframe?: Timeframe;
+  /** Measured duration of one target observation, derived from uploaded timestamps. */
+  targetIntervalMs?: number;
+  /** Whether this pattern came from the structural/event-first or broad search pass. */
+  searchTier?: "event-priority" | "general";
   conditions: Condition[];
   /** Human-readable summary, e.g. "When RVOL is High AND time is 9:30-10:00". */
   label: string;
@@ -339,6 +343,28 @@ export interface Pattern {
   confluenceTimeframes?: Timeframe[];
   /** Family-wise false-discovery estimate from all combinations tested. */
   falseDiscoveryRate?: number;
+}
+
+export interface DiscoverySearchAudit {
+  targetDatasetId: string;
+  targetDatasetLabel: string;
+  targetTimeframe: Timeframe;
+  priorityPlanned: number;
+  priorityTested: number;
+  priorityAccepted: number;
+  generalTested: number;
+  skippedByBudget: number;
+  rejected: {
+    duplicateFeature: number;
+    insufficientConfluence: number;
+    noOutcome: number;
+    smallSample: number;
+    weakWinRate: number;
+    weakLift: number;
+    redundantCondition: number;
+    weakExcursion: number;
+    duplicatePattern: number;
+  };
 }
 
 export interface OutcomeProfile {
