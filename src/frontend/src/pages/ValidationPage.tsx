@@ -46,6 +46,15 @@ export default function ValidationPage() {
   const heldUpCount = validationResults.filter((result) =>
     validationHeldUp(result),
   ).length;
+  const validatedHorizons = [
+    ...new Set(
+      patterns
+        .filter((pattern) =>
+          validationResults.some((result) => result.patternId === pattern.id),
+        )
+        .map((pattern) => pattern.horizon),
+    ),
+  ].sort((left, right) => left - right);
 
   // No patterns discovered yet — guide the user to the Discovery tab.
   if (!discoveryComplete || patterns.length === 0) {
@@ -144,10 +153,12 @@ export default function ValidationPage() {
         </>
       ) : null}
 
-      {/* Hidden config read so the linter knows we use it for context. */}
+      {/* Screen-reader context reflects the frozen per-pattern horizons. */}
       <span className="sr-only" aria-hidden="true">
-        {discoveryConfig.horizon}-bar horizon, {discoveryConfig.mfeMaeWindow}
-        -bar MFE/MAE window.
+        {validatedHorizons.length > 0
+          ? `Validated pattern-specific hold horizons: ${validatedHorizons.join(", ")} bars.`
+          : `${discoveryConfig.horizon}-bar hold horizon.`}{" "}
+        {discoveryConfig.mfeMaeWindow}-bar MFE/MAE window.
       </span>
     </div>
   );

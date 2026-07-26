@@ -1673,86 +1673,24 @@ export async function runDiscovery(
     estimatedRemainingMs: 0,
   });
 
-  // ---- Hold-window auto-find (multi-horizon candidate discovery) ----
-  // Search every hold so short-lived setups are not discarded merely because
-  // another pattern family favors a longer outcome window. A global winner
-  // is retained only as the final audit/search seed; candidates from every
-  // probe are pooled and receive their own execution recommendation below.
+  // ---- Hold-window auto-find ----
+  // Candidate conditions are discovered once at the configured seed horizon.
+  // Every retained condition set is then replayed across all hold candidates
+  // below. The previous implementation re-ran a separate bounded discovery
+  // search for all eight horizons before the requested search, turning a
+  // 50,000-combination run into roughly 130,000 evaluations and leaving the
+  // visible counter apparently stuck at 1–8 / 50,000. A single discovery pass
+  // plus per-pattern replay preserves the executable hold curve without the
+  // redundant combination searches.
   let effectiveHorizon = config.horizon;
-  const horizonProbePool: Pattern[] = [];
   if (config.holdWindowAutoFind) {
-    // Probe each horizon with a representative bounded subset, then run the
-    // resolved seed horizon at the full requested budget. Without this bound,
-    // 50k combinations × 8 horizons would silently become 400k full scans.
-    const probeBudget = Math.min(cap, Math.max(5_000, Math.floor(cap / 5)));
-    const probePriorityCap = Math.min(
-      priority.combinations.length,
-      Math.max(1_000, Math.floor(probeBudget * 0.5)),
-    );
-    const probePriority = priority.combinations.slice(0, probePriorityCap);
-    const probeGeneralCap = Math.max(0, probeBudget - probePriority.length);
-    const probeDepthCaps = perDepth.map((count) =>
-      totalCombos > 0 && probeGeneralCap > 0
-        ? Math.max(1, Math.round((count / totalCombos) * probeGeneralCap))
-        : 0,
-    );
     onProgress({
-      total: HOLD_WINDOW_CANDIDATES.length,
+      total: cap,
       tested: 0,
-      current: "Auto-finding hold window…",
+      current: `Discovering candidate events at the ${config.horizon}-bar seed horizon…`,
       isRunning: true,
       estimatedRemainingMs: 0,
     });
-    let bestHoldScore = Number.NEGATIVE_INFINITY;
-    let bestHold = config.horizon;
-    for (let hi = 0; hi < HOLD_WINDOW_CANDIDATES.length; hi++) {
-      if (shouldCancel()) {
-        onProgress({
-          total: cap,
-          tested: 0,
-          current: "Cancelled.",
-          isRunning: false,
-          estimatedRemainingMs: 0,
-        });
-        return [];
-      }
-      const hw = HOLD_WINDOW_CANDIDATES[hi];
-      const probePatterns = await evaluateAllPatterns(
-        bars,
-        candidates,
-        lookups,
-        features,
-        config,
-        probeDepthCaps,
-        depths,
-        hw,
-        config.mfeMaeWindow,
-        "off", // skip ratio filter during hold-window probe to isolate the
-        // effect of the hold window itself
-        0,
-        onProgress,
-        shouldCancel,
-        startTime,
-        /* quiet */ true,
-        outcomeLabel,
-        probePriority,
-      );
-      horizonProbePool.push(...probePatterns);
-      const score = scorePatternSet(probePatterns, config.minSampleSize);
-      if (score > bestHoldScore) {
-        bestHoldScore = score;
-        bestHold = hw;
-      }
-      onProgress({
-        total: HOLD_WINDOW_CANDIDATES.length,
-        tested: hi + 1,
-        current: `Collecting multi-horizon candidates (${hi + 1}/${HOLD_WINDOW_CANDIDATES.length})`,
-        isRunning: true,
-        estimatedRemainingMs: 0,
-      });
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    }
-    effectiveHorizon = bestHold;
   }
 
   // ---- MFE/MAE ratio mode resolution ----
@@ -1866,22 +1804,6 @@ export async function runDiscovery(
   );
 
   if (onAudit && finalAudit) onAudit(finalAudit);
-
-  // Auto mode discovers candidate conditions at every horizon instead of
-  // discarding every probe except one global winner. This allows a setup
-  // whose edge peaks at 3 or 5 bars to survive even when a different pattern
-  // family performs best at 21 bars.
-  if (config.holdWindowAutoFind && horizonProbePool.length > 0) {
-    const unique = new Map<string, Pattern>();
-    for (const pattern of [...patterns, ...horizonProbePool]) {
-      const key = `${conditionKey(pattern.conditions)}|${pattern.direction}`;
-      const previous = unique.get(key);
-      if (!previous || pattern.score > previous.score) unique.set(key, pattern);
-    }
-    patterns = [...unique.values()]
-      .sort((left, right) => right.score - left.score)
-      .slice(0, 500);
-  }
 
   // Build one executable hold curve per retained pattern. Conditions are
   // matched once, then replayed across every candidate horizon. In auto mode

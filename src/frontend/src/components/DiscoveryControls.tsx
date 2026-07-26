@@ -423,6 +423,35 @@ export function DiscoveryControls({
             "Number of bars forward used to measure pattern outcome."
           )}
         </p>
+        <div className="grid gap-1.5">
+          <label
+            htmlFor="hold-ranking-cost"
+            className="text-xs font-medium text-foreground"
+          >
+            Round-trip cost for hold ranking (bps)
+          </label>
+          <Input
+            id="hold-ranking-cost"
+            type="number"
+            min={0}
+            step={0.1}
+            value={config.roundTripCostBps ?? 0}
+            disabled={disabled}
+            onChange={(event) => {
+              const value = Number(event.target.value);
+              updateConfig({
+                roundTripCostBps: Number.isFinite(value)
+                  ? Math.max(0, value)
+                  : 0,
+              });
+            }}
+            aria-label="Round-trip cost for hold ranking in basis points"
+          />
+          <p className="text-[11px] text-muted-foreground">
+            Used before discovery to rank Auto-find holds after estimated
+            spread, commissions, and entry/exit slippage.
+          </p>
+        </div>
       </div>
 
       <Separator />

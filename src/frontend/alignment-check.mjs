@@ -114,6 +114,35 @@ try {
   if (!pathFeature || research.matrix[pathFeature.id][0] !== "Low before high") {
     throw new Error("Completed 1m high/low path was not exposed to discovery.");
   }
+  const contextCategorySource = {
+    id: "context_time",
+    name: "Time of Day",
+    category: "Time",
+    description: "",
+    type: "categorical",
+    enabled: true,
+    formula: "time bucket",
+  };
+  const categoryResearch = buildMultiTimeframeResearchSpace(
+    fiveMinute,
+    [fiveMinute, oneMinute],
+    {
+      [fiveMinute.id]: [],
+      [oneMinute.id]: [contextCategorySource],
+    },
+    {
+      [fiveMinute.id]: {},
+      [oneMinute.id]: { context_time: Array(oneMinute.bars.length).fill("Open") },
+    },
+  );
+  const alignedContextCategory = categoryResearch.features.find((feature) =>
+    feature.id.endsWith("context_time"),
+  );
+  if (alignedContextCategory?.category !== "Time") {
+    throw new Error(
+      `Aligned context feature lost its source category: ${alignedContextCategory?.category}`,
+    );
+  }
   const confluenceFeatures = [
     {
       id: "target",

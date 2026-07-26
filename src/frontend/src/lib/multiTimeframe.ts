@@ -522,7 +522,13 @@ export function buildMultiTimeframeResearchSpace(
         ...sourceFeature,
         id,
         name: `[${source.timeframe} · ${sourceLabel}] ${sourceFeature.name}`,
-        category: "Multi-Timeframe",
+        // Keep the source measurement's category so the user's research-lens
+        // choices apply equally to target and context timelines. The
+        // multi-timeframe nature is already represented by `semantic`,
+        // `originDatasetId`, and `originTimeframe`; overwriting the category
+        // here caused every higher-timeframe feature to bypass its original
+        // category toggle whenever the required Multi-Timeframe lens was on.
+        category: sourceFeature.category,
         description: `${sourceFeature.description} Causally aligned from "${sourceLabel}" (${source.timeframe}); only a source bar completed by the target decision time is used.`,
         formula: `latest completed ${source.timeframe} value of (${sourceFeature.formula ?? sourceFeature.name})`,
         semantic: "multi-timeframe",
