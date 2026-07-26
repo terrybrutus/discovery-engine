@@ -1,3 +1,4 @@
+import { DiscoveryAdvisor } from "@/components/DiscoveryAdvisor";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -306,6 +307,10 @@ export function DiscoveryControls({
           Discovery Settings
         </h2>
       </div>
+
+      <DiscoveryAdvisor disabled={disabled} />
+
+      <Separator />
 
       {/* ---- Min sample size ---- */}
       <div className={cn("flex flex-col gap-2", disabled && "opacity-60")}>

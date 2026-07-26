@@ -1,5 +1,6 @@
 import { createActor } from "@/backend";
 import type { Backend } from "@/backend";
+import { GeminiKeyAccess } from "@/components/GeminiKeyAccess";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -15,6 +16,7 @@ import {
   compileDefinitionsWithGemini,
   previewDefinitionCompilation,
 } from "@/lib/geminiDefinitionCompiler";
+import { useGeminiKey } from "@/lib/geminiKeyVault";
 import { useEngineStore } from "@/store/engineStore";
 import type { IndicatorDefinition } from "@/types";
 import { useActor, useInternetIdentity } from "@caffeineai/core-infrastructure";
@@ -22,7 +24,6 @@ import {
   BrainCircuit,
   Download,
   FileCode2,
-  KeyRound,
   Plus,
   Trash2,
   Upload,
@@ -49,7 +50,7 @@ export function DefinitionManager() {
   const generateFeatures = useEngineStore(
     (state) => state.generateFeaturesAction,
   );
-  const [apiKey, setApiKey] = useState("");
+  const apiKey = useGeminiKey();
   const [indicatorSources, setIndicatorSources] = useState<
     IndicatorSourceInput[]
   >([]);
@@ -274,26 +275,7 @@ export function DefinitionManager() {
       </div>
 
       <div className="grid gap-3 lg:grid-cols-2">
-        <div>
-          <label
-            className="mb-1 flex items-center gap-1 text-xs font-medium"
-            htmlFor="gemini-key"
-          >
-            <KeyRound className="size-3.5" /> Gemini API key
-          </label>
-          <Input
-            id="gemini-key"
-            type="password"
-            autoComplete="off"
-            value={apiKey}
-            onChange={(event) => setApiKey(event.target.value)}
-            placeholder="Held only in this component until the page reloads"
-          />
-          <p className="mt-1 text-[11px] text-muted-foreground">
-            The key is kept in memory, never saved in local storage, the
-            registry, or a run. Calls go directly from your browser to Google.
-          </p>
-        </div>
+        <GeminiKeyAccess idPrefix="definition-manager" />
         <div>
           <label
             className="mb-1 block text-xs font-medium"

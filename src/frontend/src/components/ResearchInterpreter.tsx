@@ -1,12 +1,13 @@
+import { GeminiKeyAccess } from "@/components/GeminiKeyAccess";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { useGeminiKey } from "@/lib/geminiKeyVault";
 import {
   type PatternInterpretation,
   interpretPatternsWithGemini,
   previewInterpretationCost,
 } from "@/lib/geminiPatternInterpreter";
 import type { Pattern, ValidationResult } from "@/types";
-import { BrainCircuit, KeyRound } from "lucide-react";
+import { BrainCircuit } from "lucide-react";
 import { useMemo, useState } from "react";
 
 export function ResearchInterpreter({
@@ -16,7 +17,7 @@ export function ResearchInterpreter({
   patterns: Pattern[];
   validationResults: ValidationResult[];
 }) {
-  const [apiKey, setApiKey] = useState("");
+  const apiKey = useGeminiKey();
   const [running, setRunning] = useState(false);
   const [error, setError] = useState("");
   const [interpretation, setInterpretation] =
@@ -61,26 +62,17 @@ export function ResearchInterpreter({
           </p>
         </div>
       </div>
-      <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-        <div className="relative flex-1">
-          <KeyRound className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
-          <Input
-            type="password"
-            value={apiKey}
-            onChange={(event) => setApiKey(event.target.value)}
-            placeholder="Gemini API key (memory only)"
-            autoComplete="off"
-            className="pl-9"
-          />
-        </div>
+      <div className="mt-3">
+        <GeminiKeyAccess idPrefix="research-interpreter" compact />
+      </div>
+      <div className="mt-2 flex flex-col gap-2 sm:flex-row">
         <Button onClick={() => void run()} disabled={!apiKey || running}>
           <BrainCircuit className="size-4" />
           {running ? "Reviewing…" : "Interpret Top Results"}
         </Button>
       </div>
       <p className="mt-1 text-[11px] text-muted-foreground">
-        Conservative request estimate: ${estimate.toFixed(4)}. The key is never
-        stored.
+        Conservative request estimate: ${estimate.toFixed(4)}.
       </p>
       {error ? <p className="mt-2 text-xs text-destructive">{error}</p> : null}
       {interpretation ? (
