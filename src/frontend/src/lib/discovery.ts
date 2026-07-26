@@ -1414,9 +1414,62 @@ const PRIORITY_CONTEXT_FEATURES = new Set([
   "break_retest_sequence",
 ]);
 
+const PRIORITY_TRIGGER_ORDER = [
+  "prev_day_level_event",
+  "liquidity_sweep",
+  "sweep_reclaim_sequence",
+  "break_of_structure",
+  "pivot_event",
+  "or_breakout",
+  "box_event",
+  "structure_event_sequence",
+  "break_retest_sequence",
+] as const;
+
+const PRIORITY_CONTEXT_ORDER = [
+  "candle_direction",
+  "swing_sequence",
+  "structure_state",
+  "prev_day_level_state",
+  "prev_day_level_event",
+  "liquidity_sweep",
+  "break_of_structure",
+  "pivot_event",
+  "or_breakout",
+  "box_event",
+  "structure_event_sequence",
+  "sweep_reclaim_sequence",
+  "break_retest_sequence",
+] as const;
+
 function baseFeatureId(featureId: string): string {
   const parts = featureId.split("__");
   return parts[parts.length - 1] ?? featureId;
+}
+
+function conditionFamilyKey(conditions: Condition[]): string {
+  return conditions
+    .map((condition) => condition.featureId)
+    .sort()
+    .join("|");
+}
+
+function priorityConditionSort(
+  left: Condition,
+  right: Condition,
+  order: readonly string[],
+): number {
+  const leftBase = baseFeatureId(left.featureId);
+  const rightBase = baseFeatureId(right.featureId);
+  const leftRank = order.indexOf(leftBase);
+  const rightRank = order.indexOf(rightBase);
+  const rankedLeft = leftRank < 0 ? order.length : leftRank;
+  const rankedRight = rightRank < 0 ? order.length : rightRank;
+  if (rankedLeft !== rankedRight) return rankedLeft - rankedRight;
+  if (left.featureId !== right.featureId) {
+    return left.featureId.localeCompare(right.featureId);
+  }
+  return conditionKey([left]).localeCompare(conditionKey([right]));
 }
 
 function isInactiveState(condition: Condition): boolean {
@@ -1466,6 +1519,14 @@ export function buildEventPriorityCombinations(
     if (PRIORITY_TRIGGER_FEATURES.has(baseId)) entry.triggers.push(condition);
     if (PRIORITY_CONTEXT_FEATURES.has(baseId)) entry.contexts.push(condition);
     bySource.set(source, entry);
+  }
+  for (const entry of bySource.values()) {
+    entry.triggers.sort((left, right) =>
+      priorityConditionSort(left, right, PRIORITY_TRIGGER_ORDER),
+    );
+    entry.contexts.sort((left, right) =>
+      priorityConditionSort(left, right, PRIORITY_CONTEXT_ORDER),
+    );
   }
 
   const sources = [...bySource.keys()].sort();
@@ -1966,8 +2027,12 @@ async function evaluateAllPatterns(
   const MAX_NEAR_DUPLICATE_COMPARISONS = 32;
   const MAX_EVALUATION_CACHE_ENTRIES = 256;
   const patterns: Pattern[] = [];
-  const seenMatchSets = new Set<string>();
-  const keptMatchSets: number[][] = [];
+  const seenMatchSetsByFamily = new Map<string, Set<string>>();
+  const keptMatchSets: {
+    familyKey: string;
+    matches: number[];
+  }[] = [];
+  const keptFamilyKeys: string[] = [];
   const outcomeCache = buildOutcomeCache(bars, horizon, mfeMaeWindow);
   const evaluationCache = new Map<string, EvalResult | null>();
   const baselines = baselineWinRates(bars, horizon);
@@ -2076,19 +2141,14 @@ async function evaluateAllPatterns(
       lift,
     );
     acceptedCandidates++;
-    if (patterns.length >= MAX_RETAINED_PATTERNS) {
-      let lowestScore = Number.POSITIVE_INFINITY;
-      for (const pattern of patterns) {
-        lowestScore = Math.min(lowestScore, pattern.score);
-      }
-      if (score <= lowestScore) return;
-    }
+    const familyKey = conditionFamilyKey(conds);
     const matchSetKey = matchSetSignature(result.matches);
     const comparable = keptMatchSets.filter(
-      (matches) =>
-        Math.abs(matches.length - result.matches.length) /
-          Math.max(matches.length, result.matches.length) <=
-        0.1,
+      (entry) =>
+        entry.familyKey === familyKey &&
+        Math.abs(entry.matches.length - result.matches.length) /
+          Math.max(entry.matches.length, result.matches.length) <=
+          0.1,
     );
     const comparisonStride = Math.max(
       1,
@@ -2096,16 +2156,21 @@ async function evaluateAllPatterns(
     );
     let isNearDuplicate = false;
     for (let index = 0; index < comparable.length; index += comparisonStride) {
-      if (matchSetSimilarity(comparable[index], result.matches) >= 0.95) {
+      if (
+        matchSetSimilarity(comparable[index].matches, result.matches) >= 0.95
+      ) {
         isNearDuplicate = true;
         break;
       }
     }
-    if (seenMatchSets.has(matchSetKey) || isNearDuplicate) {
+    const familyMatchSets =
+      seenMatchSetsByFamily.get(familyKey) ?? new Set<string>();
+    if (familyMatchSets.has(matchSetKey) || isNearDuplicate) {
       if (isPriority && audit) audit.rejected.duplicatePattern++;
       return;
     }
-    seenMatchSets.add(matchSetKey);
+    familyMatchSets.add(matchSetKey);
+    seenMatchSetsByFamily.set(familyKey, familyMatchSets);
     const pattern: Pattern = {
       id: `p_${acceptedCandidates}`,
       searchTier: tier,
@@ -2163,16 +2228,56 @@ async function evaluateAllPatterns(
     };
     if (patterns.length < MAX_RETAINED_PATTERNS) {
       patterns.push(pattern);
-      keptMatchSets.push(result.matches);
+      keptMatchSets.push({ familyKey, matches: result.matches });
+      keptFamilyKeys.push(familyKey);
     } else {
-      let lowestIndex = 0;
-      for (let index = 1; index < patterns.length; index++) {
-        if (patterns[index].score < patterns[lowestIndex].score) {
-          lowestIndex = index;
+      const familyCounts = new Map<string, number>();
+      for (const keptFamily of keptFamilyKeys) {
+        familyCounts.set(keptFamily, (familyCounts.get(keptFamily) ?? 0) + 1);
+      }
+      let replacementIndex = -1;
+      if ((familyCounts.get(familyKey) ?? 0) === 0) {
+        for (let index = 0; index < patterns.length; index++) {
+          if ((familyCounts.get(keptFamilyKeys[index]) ?? 0) <= 1) continue;
+          if (
+            replacementIndex < 0 ||
+            patterns[index].score < patterns[replacementIndex].score
+          ) {
+            replacementIndex = index;
+          }
+        }
+      } else {
+        for (let index = 0; index < patterns.length; index++) {
+          if (keptFamilyKeys[index] !== familyKey) continue;
+          if (
+            replacementIndex < 0 ||
+            patterns[index].score < patterns[replacementIndex].score
+          ) {
+            replacementIndex = index;
+          }
         }
       }
-      patterns[lowestIndex] = pattern;
-      keptMatchSets[lowestIndex] = result.matches;
+      if (replacementIndex < 0) {
+        for (let index = 0; index < patterns.length; index++) {
+          if (
+            replacementIndex < 0 ||
+            patterns[index].score < patterns[replacementIndex].score
+          ) {
+            replacementIndex = index;
+          }
+        }
+      }
+      const replacingSameFamily =
+        keptFamilyKeys[replacementIndex] === familyKey;
+      if (replacingSameFamily && score <= patterns[replacementIndex].score) {
+        return;
+      }
+      patterns[replacementIndex] = pattern;
+      keptMatchSets[replacementIndex] = {
+        familyKey,
+        matches: result.matches,
+      };
+      keptFamilyKeys[replacementIndex] = familyKey;
     }
     if (isPriority && audit) audit.priorityAccepted++;
   };

@@ -17,8 +17,13 @@ try {
   const { buildMultiTimeframeResearchSpace } = await server.ssrLoadModule(
     "/src/lib/multiTimeframe.ts",
   );
-  const { analyzePatternHorizons, runDiscovery } = await server.ssrLoadModule(
-    "/src/lib/discovery.ts",
+  const {
+    analyzePatternHorizons,
+    buildEventPriorityCombinations,
+    runDiscovery,
+  } = await server.ssrLoadModule("/src/lib/discovery.ts");
+  const { selectBalancedPatterns } = await server.ssrLoadModule(
+    "/src/lib/patternSelection.ts",
   );
   const { meetsConfluenceRequirement } = await server.ssrLoadModule(
     "/src/lib/patternConfluence.ts",
@@ -100,6 +105,141 @@ try {
       "Automatic research selection did not remove dead/duplicate measurements and apply a complete first-pass plan.",
     );
   }
+
+  // Structural-search regression: the portable three-source relationship
+  // must be scheduled before incidental structural proxies consume the
+  // bounded search and report pools.
+  const priorityFeatures = [
+    {
+      id: "prev_day_level_event",
+      name: "Previous Day Level Event",
+      category: "Levels & Sessions",
+      type: "categorical",
+      enabled: true,
+      description: "",
+      originDatasetId: "target-5m",
+      originTimeframe: "5m",
+    },
+    {
+      id: "source15__candle_direction",
+      name: "15m Candle Direction",
+      category: "Multi-Timeframe",
+      type: "categorical",
+      enabled: true,
+      description: "",
+      originDatasetId: "source-15m",
+      originTimeframe: "15m",
+    },
+    {
+      id: "source1d__candle_direction",
+      name: "1d Candle Direction",
+      category: "Multi-Timeframe",
+      type: "categorical",
+      enabled: true,
+      description: "",
+      originDatasetId: "source-1d",
+      originTimeframe: "1d",
+    },
+  ];
+  const priorityConditions = [
+    {
+      featureId: "prev_day_level_event",
+      operator: "eq",
+      bucketLabel: "Swept PDL",
+    },
+    {
+      featureId: "source15__candle_direction",
+      operator: "eq",
+      bucketLabel: "Up",
+    },
+    {
+      featureId: "source15__candle_direction",
+      operator: "eq",
+      bucketLabel: "Down",
+    },
+    {
+      featureId: "source1d__candle_direction",
+      operator: "eq",
+      bucketLabel: "Up",
+    },
+    {
+      featureId: "source1d__candle_direction",
+      operator: "eq",
+      bucketLabel: "Down",
+    },
+  ];
+  const scheduled = buildEventPriorityCombinations(
+    priorityConditions,
+    priorityFeatures,
+    3,
+    20,
+  ).combinations;
+  const scheduledExact = scheduled.some(
+    (conditions) =>
+      conditions.some(
+        (condition) =>
+          condition.featureId === "prev_day_level_event" &&
+          condition.bucketLabel === "Swept PDL",
+      ) &&
+      conditions.some(
+        (condition) =>
+          condition.featureId === "source15__candle_direction" &&
+          condition.bucketLabel === "Up",
+      ) &&
+      conditions.some(
+        (condition) =>
+          condition.featureId === "source1d__candle_direction" &&
+          condition.bucketLabel === "Down",
+      ),
+  );
+  if (!scheduledExact) {
+    throw new Error(
+      "The canonical 5m event + 15m direction + 1d direction relationship was not guaranteed structural-search coverage.",
+    );
+  }
+  const canonicalPattern = {
+    id: "canonical",
+    targetDatasetId: "target-5m",
+    searchTier: "event-priority",
+    conditions: [
+      priorityConditions[0],
+      priorityConditions[1],
+      priorityConditions[4],
+    ],
+    confluenceDatasetIds: ["target-5m", "source-15m", "source-1d"],
+    score: 1,
+    sampleSize: 55,
+  };
+  const proxyPatterns = Array.from({ length: 120 }, (_, index) => ({
+    id: `proxy-${index}`,
+    targetDatasetId: "target-5m",
+    searchTier: "event-priority",
+    conditions: [
+      {
+        featureId: `proxy-${index}__box_event`,
+        operator: "eq",
+        bucketLabel: "Breakout Up",
+      },
+      {
+        featureId: `proxy-${index}__numeric_context`,
+        operator: "gt",
+        value: index,
+      },
+    ],
+    confluenceDatasetIds: ["target-5m", `proxy-${index}`],
+    score: 100 - index / 10,
+    sampleSize: 100,
+  }));
+  const selectedStructural = selectBalancedPatterns(
+    [...proxyPatterns, canonicalPattern],
+    100,
+  );
+  if (!selectedStructural.some((pattern) => pattern.id === "canonical")) {
+    throw new Error(
+      "Portable cross-timeframe event relationships were crowded out of the report by proxy families.",
+    );
+  }
+
   const labels = hierarchy.instruments[0].timeframeLabels.join(" → ");
   if (labels !== "15m → 1h → 1d") {
     throw new Error(`Unexpected hierarchy: ${labels}`);
