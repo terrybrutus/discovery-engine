@@ -40,6 +40,9 @@ try {
   const { simulateCandidateSystem } = await server.ssrLoadModule(
     "/src/lib/candidateSimulation.ts",
   );
+  const { optimizeCandidateSystem } = await server.ssrLoadModule(
+    "/src/lib/candidateSystemOptimizer.ts",
+  );
   const { buildDatasetFeatures, createAutomaticResearchPlan } =
     await server.ssrLoadModule("/src/store/engineStore.ts");
 
@@ -123,6 +126,79 @@ try {
     Math.abs(simulation.netProfit - 500) > 1e-9
   ) {
     throw new Error("Candidate-system execution regression failed.");
+  }
+  const optimizerBars = Array.from({ length: 240 }, (_, index) => {
+    const precedingSignal = index > 0 && (index - 1) % 6 === 0;
+    const occurrence = precedingSignal ? Math.floor((index - 1) / 6) : -1;
+    const fails = occurrence >= 0 && occurrence % 5 === 4;
+    return {
+      timestamp: index * 60_000,
+      open: 100,
+      high: precedingSignal ? (fails ? 100.02 : 100.35) : 100.04,
+      low: precedingSignal ? (fails ? 99.85 : 99.95) : 99.96,
+      close: precedingSignal ? (fails ? 99.9 : 100.3) : 100,
+      volume: 1,
+    };
+  });
+  const optimizerPattern = {
+    id: "optimizer-regression",
+    conditions: [{ featureId: "event", operator: "eq", bucketLabel: "Yes" }],
+    label: "Synthetic recurring event",
+    direction: "bullish",
+    winRate: 80,
+    avgMove: 0.2,
+    avgMAE: 0.1,
+    avgMFE: 0.3,
+    sampleSize: 40,
+    confidence: "high",
+    score: 1,
+    horizon: 1,
+    targetDatasetLabel: "Optimizer fixture",
+    targetTimeframe: "1m",
+  };
+  const optimizerResult = optimizeCandidateSystem({
+    pattern: optimizerPattern,
+    bars: optimizerBars,
+    matrix: {
+      event: optimizerBars.map((_, index) =>
+        index % 6 === 0 ? "Yes" : "No",
+      ),
+    },
+    session: {
+      timeZone: "America/New_York",
+      regularOpenMinutes: 570,
+      regularCloseMinutes: 960,
+      openingRangeMinutes: 30,
+      tradingDayStartMinutes: 1080,
+    },
+    baseConfig: {
+      entryMode: "next-open",
+      entryExpiryBars: 1,
+      stopPct: 0.1,
+      targetMode: "fixed-percent",
+      targetPct: 0.1,
+      rewardRiskMultiple: 1,
+      maxHoldBars: 1,
+      roundTripCostBps: 0,
+      startingCapital: 50_000,
+      riskPerTradePct: 1,
+      nonOverlapping: true,
+    },
+    optimizerConfig: {
+      minDevelopmentTrades: 15,
+      minHoldoutTrades: 4,
+      maxCandidates: 80,
+    },
+  });
+  const optimizerRecommendation = optimizerResult.candidates.find(
+    (candidate) => candidate.id === optimizerResult.recommendedCandidateId,
+  );
+  if (
+    !optimizerRecommendation ||
+    !optimizerRecommendation.walkForwardPassed ||
+    !optimizerRecommendation.sealedHoldoutPassed
+  ) {
+    throw new Error("Walk-forward candidate-system optimizer regression failed.");
   }
   const parse = (name, minutes, rows = 10) => {
     const result = parseCsv(
@@ -767,6 +843,10 @@ try {
         walkForwardReliabilityGate: "3/4 folds",
         simulatedTrades: simulation.trades.length,
         simulatedNetProfit: simulation.netProfit,
+        optimizerCandidatesTested: optimizerResult.candidatesTested,
+        optimizerWalkForward: `${optimizerRecommendation.walkForward.profitableFolds}/${optimizerRecommendation.walkForward.folds}`,
+        optimizerHoldoutTrades:
+          optimizerRecommendation.sealedHoldout.trades.length,
       },
       null,
       2,

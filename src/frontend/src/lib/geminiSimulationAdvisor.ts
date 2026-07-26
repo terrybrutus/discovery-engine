@@ -1,4 +1,5 @@
 import type { CandidateSimulationConfig } from "@/lib/candidateSimulation";
+import type { CandidateSystemOptimization } from "@/lib/candidateSystemOptimizer";
 import type { Pattern } from "@/types";
 
 const MODEL = "gemini-3.5-flash-lite";
@@ -7,6 +8,14 @@ export interface SimulationRecommendation {
   config: CandidateSimulationConfig;
   summary: string;
   cautions: string[];
+}
+
+export interface PlainSystemExplanation {
+  title: string;
+  plainSteps: string[];
+  whyItPassed: string;
+  warnings: string[];
+  pineBuildBrief: string;
 }
 
 function schema() {
@@ -191,5 +200,104 @@ export async function recommendSimulationWithGemini(input: {
           (caution): caution is string => typeof caution === "string",
         )
       : [],
+  };
+}
+
+export async function explainOptimizedSystemWithGemini(input: {
+  apiKey: string;
+  pattern: Pattern;
+  optimization: CandidateSystemOptimization;
+}): Promise<PlainSystemExplanation> {
+  if (!input.apiKey.trim()) throw new Error("Connect your Gemini key first.");
+  const candidate = input.optimization.candidates.find(
+    (item) => item.id === input.optimization.recommendedCandidateId,
+  );
+  if (!candidate) throw new Error("No optimized candidate passed every gate.");
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": input.apiKey.trim(),
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            role: "user",
+            parts: [
+              {
+                text: [
+                  "Explain this deterministic candidate trading system in language a fifth grader or non-technical grandparent can follow.",
+                  "Do not change, optimize, add, or guess any rule. Do not promise profitability.",
+                  "Use short commands for the front-end steps. Keep statistical explanation in whyItPassed and warnings.",
+                  "The Pine build brief must preserve exact signal timing, timeframe, conditions, entry, stop, target, maximum hold, overlap rule, costs, and ambiguity handling.",
+                  `Pattern: ${JSON.stringify({
+                    label: input.pattern.label,
+                    recipe: input.pattern.reproductionRecipe,
+                  })}`,
+                  `Locked candidate: ${JSON.stringify(candidate)}`,
+                  `Methodology: ${JSON.stringify(input.optimization.methodology)}`,
+                ].join("\n\n"),
+              },
+            ],
+          },
+        ],
+        generationConfig: {
+          temperature: 0.05,
+          maxOutputTokens: 2500,
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: "OBJECT",
+            required: [
+              "title",
+              "plainSteps",
+              "whyItPassed",
+              "warnings",
+              "pineBuildBrief",
+            ],
+            properties: {
+              title: { type: "STRING" },
+              plainSteps: { type: "ARRAY", items: { type: "STRING" } },
+              whyItPassed: { type: "STRING" },
+              warnings: { type: "ARRAY", items: { type: "STRING" } },
+              pineBuildBrief: { type: "STRING" },
+            },
+          },
+        },
+      }),
+    },
+  );
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(
+      `Gemini system explanation failed (${response.status}): ${body.slice(0, 300)}`,
+    );
+  }
+  const payload = (await response.json()) as {
+    candidates?: { content?: { parts?: { text?: string }[] } }[];
+  };
+  const text = payload.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) throw new Error("Gemini returned no system explanation.");
+  const decoded = JSON.parse(text) as Partial<PlainSystemExplanation>;
+  if (
+    typeof decoded.title !== "string" ||
+    !Array.isArray(decoded.plainSteps) ||
+    typeof decoded.whyItPassed !== "string" ||
+    !Array.isArray(decoded.warnings) ||
+    typeof decoded.pineBuildBrief !== "string"
+  ) {
+    throw new Error("Gemini returned an invalid system explanation.");
+  }
+  return {
+    title: decoded.title,
+    plainSteps: decoded.plainSteps
+      .filter((step): step is string => typeof step === "string")
+      .slice(0, 10),
+    whyItPassed: decoded.whyItPassed,
+    warnings: decoded.warnings
+      .filter((warning): warning is string => typeof warning === "string")
+      .slice(0, 6),
+    pineBuildBrief: decoded.pineBuildBrief,
   };
 }

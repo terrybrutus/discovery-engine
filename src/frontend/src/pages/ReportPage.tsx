@@ -47,6 +47,7 @@ export default function ReportPage() {
   const patterns = useEngineStore((s) => s.patterns);
   const validationResults = useEngineStore((s) => s.validationResults);
   const report = useEngineStore((s) => s.report);
+  const systemOptimizations = useEngineStore((s) => s.systemOptimizations);
   const generateReportAction = useEngineStore((s) => s.generateReportAction);
   const setActiveTab = useEngineStore((s) => s.setActiveTab);
 
@@ -174,6 +175,21 @@ export default function ReportPage() {
       s.id !== "top-by-ratio" &&
       s.id !== "symbol-attribution",
   );
+  const executableCandidates = Object.entries(systemOptimizations).flatMap(
+    ([patternId, optimization]) => {
+      const candidate = optimization.candidates.find(
+        (item) => item.id === optimization.recommendedCandidateId,
+      );
+      if (!candidate) return [];
+      return [
+        {
+          pattern: patterns.find((item) => item.id === patternId),
+          candidate,
+          integrityWarning: optimization.integrityWarning,
+        },
+      ];
+    },
+  );
 
   const handleRegenerate = () => generateReportAction();
 
@@ -197,6 +213,7 @@ export default function ReportPage() {
                 patterns,
                 validationResults,
                 datasets,
+                systemOptimizations,
               )
             }
           >
@@ -212,6 +229,7 @@ export default function ReportPage() {
                 patterns,
                 validationResults,
                 datasets,
+                systemOptimizations,
               )
             }
           >
@@ -288,6 +306,59 @@ export default function ReportPage() {
         patterns={patterns}
         validationResults={validationResults}
       />
+
+      {executableCandidates.length > 0 && (
+        <section className="flex flex-col gap-3">
+          <SectionHeader index="SYS" title="Executable Candidate Systems" />
+          <p className="text-sm leading-relaxed text-muted-foreground">
+            These are locked, reproducible rules produced by the constrained
+            walk-forward optimizer. They are candidates for later-data testing,
+            not promises of live profitability.
+          </p>
+          <div className="grid gap-3">
+            {executableCandidates.map(
+              ({ pattern, candidate, integrityWarning }) => (
+                <article
+                  key={candidate.id}
+                  className="rounded-lg border border-primary/25 bg-primary/5 p-4"
+                >
+                  <p className="text-xs text-muted-foreground">
+                    {pattern?.plainEnglishSentence ?? pattern?.label}
+                  </p>
+                  <p className="mt-2 font-medium text-foreground">
+                    {candidate.recipe.oneSentenceRule}
+                  </p>
+                  <ol className="mt-3 list-decimal space-y-1 pl-5 text-sm text-foreground">
+                    {candidate.recipe.steps.map((step) => (
+                      <li key={step}>{step}</li>
+                    ))}
+                  </ol>
+                  <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 font-mono text-xs text-muted-foreground">
+                    <span>
+                      WF {candidate.walkForward.profitableFolds}/
+                      {candidate.walkForward.folds} folds
+                    </span>
+                    <span>
+                      Final {candidate.sealedHoldout.trades.length} trades
+                    </span>
+                    <span>
+                      Expectancy{" "}
+                      {candidate.sealedHoldout.expectancyR.toFixed(2)}R
+                    </span>
+                    <span>
+                      PF{" "}
+                      {candidate.sealedHoldout.profitFactor?.toFixed(2) ?? "—"}
+                    </span>
+                  </div>
+                  <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+                    {integrityWarning}
+                  </p>
+                </article>
+              ),
+            )}
+          </div>
+        </section>
+      )}
 
       {/* ---- Top patterns by win rate ---- */}
       <section

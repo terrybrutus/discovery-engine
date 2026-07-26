@@ -1,4 +1,5 @@
 import type { Backend } from "@/backend";
+import type { CandidateSystemOptimization } from "@/lib/candidateSystemOptimizer";
 import { runCrossReference } from "@/lib/crossReference";
 import { runDiscovery } from "@/lib/discovery";
 import {
@@ -128,6 +129,7 @@ interface SavedRunArchiveV2 {
   discoverySearchAudits: DiscoverySearchAudit[];
   validationResults: ValidationResult[];
   report: Report | null;
+  systemOptimizations: Record<string, CandidateSystemOptimization>;
   automaticResearchPlan: AutomaticResearchPlan | null;
   researchPlanCustomized: boolean;
   marketSessionConfig: MarketSessionConfig;
@@ -150,6 +152,7 @@ function encodeSavedRunArchive(state: EngineState): string {
     discoverySearchAudits: state.discoverySearchAudits,
     validationResults: state.validationResults,
     report: state.report,
+    systemOptimizations: state.systemOptimizations,
     automaticResearchPlan: state.automaticResearchPlan,
     researchPlanCustomized: state.researchPlanCustomized,
     marketSessionConfig: state.marketSessionConfig,
@@ -203,6 +206,7 @@ interface EngineState {
   /** True while a cross-reference run is in progress. */
   isCrossReferencing: boolean;
   report: Report | null;
+  systemOptimizations: Record<string, CandidateSystemOptimization>;
   discoveryConfig: DiscoveryConfig;
   discoveryProgress: DiscoveryProgress;
   /** Deterministic schema/data-based first-pass plan applied after generation. */
@@ -266,6 +270,10 @@ interface EngineState {
   updateConfig: (patch: Partial<DiscoveryConfig>) => void;
   applyAutomaticResearchPlan: () => void;
   updateMarketSessionConfig: (patch: Partial<MarketSessionConfig>) => void;
+  saveSystemOptimization: (
+    patternId: string,
+    optimization: CandidateSystemOptimization,
+  ) => void;
   cancelDiscovery: () => void;
   resetSession: () => void;
   restoreRecoveryAction: () => Promise<void>;
@@ -470,6 +478,17 @@ export function buildDatasetFeatures(
   const informativeMatrix: FeatureMatrix = Object.fromEntries(
     deduplicated.map((feature) => [feature.id, matrix[feature.id]]),
   );
+  // These causal price levels are execution metadata rather than searchable
+  // features. Preserve them for candidate-system limit entries and midpoint
+  // exits without exposing their absolute prices to discovery.
+  for (const key of [
+    "__adjusted_pds_high",
+    "__adjusted_pds_low",
+    "__adjusted_pds_mid",
+  ]) {
+    const values = computed[key];
+    if (values) informativeMatrix[key] = values;
+  }
   return {
     features: deduplicated,
     matrix: informativeMatrix,
@@ -698,6 +717,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
   researchContextDatasetIds: [],
   researchTotalBars: 0,
   patterns: [],
+  systemOptimizations: {},
   discoverySearchAudits: [],
   validationResults: [],
   crossReferenceResults: [],
@@ -740,6 +760,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         automaticResearchPlan: null,
         researchPlanCustomized: false,
         patterns: [],
+        systemOptimizations: {},
         validationResults: [],
         crossReferenceResults: [],
         report: null,
@@ -798,6 +819,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         automaticResearchPlan: null,
         researchPlanCustomized: false,
         patterns: [],
+        systemOptimizations: {},
         validationResults: [],
         crossReferenceResults: [],
         report: null,
@@ -829,6 +851,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         researchContextDatasetIds: [],
         researchTotalBars: 0,
         patterns: [],
+        systemOptimizations: {},
         validationResults: [],
         report: null,
         discoveryProgress: DEFAULT_PROGRESS,
@@ -849,6 +872,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
           ? [...state.selectedDatasetIds, state.activeDatasetId]
           : state.selectedDatasetIds,
       patterns: [],
+      systemOptimizations: {},
       discoverySearchAudits: [],
       validationResults: [],
       report: null,
@@ -878,6 +902,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
           ? state.selectedDatasetIds.filter((datasetId) => datasetId !== id)
           : [...state.selectedDatasetIds, id],
         patterns: [],
+        systemOptimizations: {},
         validationResults: [],
         crossReferenceResults: [],
         report: null,
@@ -980,6 +1005,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
           completedSteps: completed,
           // Clear downstream results since features changed.
           patterns: [],
+          systemOptimizations: {},
           researchFeatures: [],
           researchFeatureValues: null,
           researchContextDatasetIds: [],
@@ -1018,6 +1044,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         researchFeatureValues: null,
         researchContextDatasetIds: [],
         patterns: [],
+        systemOptimizations: {},
         validationResults: [],
         report: null,
         researchPlanCustomized: true,
@@ -1042,6 +1069,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         researchFeatureValues: null,
         researchContextDatasetIds: [],
         patterns: [],
+        systemOptimizations: {},
         validationResults: [],
         report: null,
         researchPlanCustomized: true,
@@ -1093,6 +1121,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
       lastError: null,
       discoveryProgress: { ...DEFAULT_PROGRESS, isRunning: true },
       patterns: [],
+      systemOptimizations: {},
       discoverySearchAudits: [],
       report: null,
       researchFeatures: [],
@@ -1472,6 +1501,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
       ),
       researchPlanCustomized: false,
       patterns: [],
+      systemOptimizations: {},
       validationResults: [],
       report: null,
     });
@@ -1501,6 +1531,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
       researchContextDatasetIds: [],
       researchTotalBars: 0,
       patterns: [],
+      systemOptimizations: {},
       discoverySearchAudits: [],
       validationResults: [],
       crossReferenceResults: [],
@@ -1615,6 +1646,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
           0,
         ),
         patterns: checkpoint.patterns,
+        systemOptimizations: checkpoint.systemOptimizations ?? {},
         validationResults: checkpoint.validationResults,
         discoverySearchAudits: checkpoint.discoverySearchAudits,
         crossReferenceResults: checkpoint.crossReferenceResults,
@@ -1650,6 +1682,14 @@ export const useEngineStore = create<EngineState>((set, get) => ({
 
   clearAllOverrides: () => set({ featureOverrides: {} }),
 
+  saveSystemOptimization: (patternId, optimization) =>
+    set((state) => ({
+      systemOptimizations: {
+        ...state.systemOptimizations,
+        [patternId]: optimization,
+      },
+    })),
+
   updateMarketSessionConfig: (patch) => {
     set((state) => ({
       marketSessionConfig: {
@@ -1657,6 +1697,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         ...patch,
       },
       patterns: [],
+      systemOptimizations: {},
       validationResults: [],
       report: null,
       completedSteps: new Set<CompletedStep>(
@@ -1823,6 +1864,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
           discoverySearchAudits: archive.discoverySearchAudits,
           researchTotalBars: archive.researchTotalBars,
           patterns: archive.patterns,
+          systemOptimizations: archive.systemOptimizations ?? {},
           validationResults: archive.validationResults,
           report: archive.report,
           automaticResearchPlan: archive.automaticResearchPlan,
@@ -2023,6 +2065,7 @@ const flushRecoveryCheckpoint = () => {
     marketSessionConfig: latest.marketSessionConfig,
     featureOverrides: latest.featureOverrides,
     patterns: latest.patterns,
+    systemOptimizations: latest.systemOptimizations,
     validationResults: latest.validationResults,
     discoverySearchAudits: latest.discoverySearchAudits,
     crossReferenceResults: latest.crossReferenceResults,
@@ -2043,6 +2086,7 @@ useEngineStore.subscribe((state, previous) => {
     state.marketSessionConfig !== previous.marketSessionConfig ||
     state.featureOverrides !== previous.featureOverrides ||
     state.patterns !== previous.patterns ||
+    state.systemOptimizations !== previous.systemOptimizations ||
     state.validationResults !== previous.validationResults ||
     state.discoverySearchAudits !== previous.discoverySearchAudits ||
     state.crossReferenceResults !== previous.crossReferenceResults ||

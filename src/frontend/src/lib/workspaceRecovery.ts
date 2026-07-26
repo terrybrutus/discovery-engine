@@ -1,3 +1,4 @@
+import type { CandidateSystemOptimization } from "@/lib/candidateSystemOptimizer";
 import type {
   CompletedStep,
   CrossReferenceResult,
@@ -31,6 +32,7 @@ export interface WorkspaceCheckpoint {
   discoverySearchAudits: DiscoverySearchAudit[];
   crossReferenceResults: CrossReferenceResult[];
   report: Report | null;
+  systemOptimizations?: Record<string, CandidateSystemOptimization>;
   completedSteps: CompletedStep[];
   activeTab: TabId;
 }

@@ -7,12 +7,21 @@ import {
   DEFAULT_SIMULATION_CONFIG,
   simulateCandidateSystem,
 } from "@/lib/candidateSimulation";
+import {
+  DEFAULT_SYSTEM_OPTIMIZER_CONFIG,
+  type SystemOptimizerConfig,
+  optimizeCandidateSystem,
+} from "@/lib/candidateSystemOptimizer";
 import { useGeminiKey } from "@/lib/geminiKeyVault";
-import { recommendSimulationWithGemini } from "@/lib/geminiSimulationAdvisor";
+import {
+  type PlainSystemExplanation,
+  explainOptimizedSystemWithGemini,
+  recommendSimulationWithGemini,
+} from "@/lib/geminiSimulationAdvisor";
 import { buildMultiTimeframeResearchSpace } from "@/lib/multiTimeframe";
 import { useEngineStore } from "@/store/engineStore";
 import type { Pattern } from "@/types";
-import { FlaskConical, Play, Sparkles } from "lucide-react";
+import { Download, FlaskConical, Gauge, Play, Sparkles } from "lucide-react";
 import { useMemo, useState } from "react";
 
 function money(value: number): string {
@@ -61,6 +70,15 @@ export function CandidateSystemSimulator({ pattern }: { pattern: Pattern }) {
   const [advisorMessage, setAdvisorMessage] = useState("");
   const [advisorError, setAdvisorError] = useState("");
   const [advisorLoading, setAdvisorLoading] = useState(false);
+  const [systemExplanation, setSystemExplanation] =
+    useState<PlainSystemExplanation>();
+  const [optimizerRunning, setOptimizerRunning] = useState(false);
+  const [optimizerConfig, setOptimizerConfig] = useState<SystemOptimizerConfig>(
+    DEFAULT_SYSTEM_OPTIMIZER_CONFIG,
+  );
+  const [localOptimization, setLocalOptimization] = useState<
+    ReturnType<typeof optimizeCandidateSystem> | undefined
+  >();
   const apiKey = useGeminiKey();
   const datasets = useEngineStore((state) => state.datasets);
   const selectedIds = useEngineStore((state) => state.selectedDatasetIds);
@@ -72,6 +90,13 @@ export function CandidateSystemSimulator({ pattern }: { pattern: Pattern }) {
   const discoveryCost = useEngineStore(
     (state) => state.discoveryConfig.roundTripCostBps ?? 0,
   );
+  const savedOptimization = useEngineStore(
+    (state) => state.systemOptimizations[pattern.id],
+  );
+  const saveSystemOptimization = useEngineStore(
+    (state) => state.saveSystemOptimization,
+  );
+  const optimization = localOptimization ?? savedOptimization;
 
   const research = useMemo(() => {
     if (!expanded) return null;
@@ -321,6 +346,185 @@ export function CandidateSystemSimulator({ pattern }: { pattern: Pattern }) {
             </div>
           ) : null}
 
+          <div className="mt-5 border-t border-border pt-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h4 className="font-display text-sm font-semibold text-foreground">
+                  Find a robust trading system
+                </h4>
+                <p className="mt-1 max-w-3xl text-xs leading-relaxed text-muted-foreground">
+                  Tests a deliberately small set of normal entries, stops,
+                  targets, and holds. It ranks them before opening the final{" "}
+                  {optimizerConfig.sealedHoldoutPct}% of history, requires
+                  positive chronological folds, and gives simpler rules an
+                  advantage.
+                </p>
+              </div>
+              <Button
+                disabled={optimizerRunning}
+                onClick={() => {
+                  if (!research) return;
+                  setOptimizerRunning(true);
+                  window.setTimeout(() => {
+                    try {
+                      const next = optimizeCandidateSystem({
+                        pattern,
+                        bars: research.target.bars,
+                        matrix: research.space.matrix,
+                        session,
+                        baseConfig: {
+                          ...config,
+                          roundTripCostBps: config.roundTripCostBps,
+                        },
+                        optimizerConfig,
+                      });
+                      setLocalOptimization(next);
+                      saveSystemOptimization(pattern.id, next);
+                    } finally {
+                      setOptimizerRunning(false);
+                    }
+                  }, 20);
+                }}
+              >
+                <Gauge className="size-4" aria-hidden="true" />
+                {optimizerRunning
+                  ? "Testing candidate systems…"
+                  : optimization
+                    ? "Re-run Robustness Search"
+                    : "Find Robust Trading Systems"}
+              </Button>
+            </div>
+
+            <details className="mt-3 rounded border border-border bg-background/70 p-3">
+              <summary className="cursor-pointer text-xs font-medium text-foreground">
+                Research safeguards and limits
+              </summary>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <NumericField
+                  label="Final sealed history %"
+                  value={optimizerConfig.sealedHoldoutPct}
+                  min={10}
+                  step={5}
+                  onChange={(sealedHoldoutPct) =>
+                    setOptimizerConfig((current) => ({
+                      ...current,
+                      sealedHoldoutPct,
+                    }))
+                  }
+                />
+                <NumericField
+                  label="Walk-forward folds"
+                  value={optimizerConfig.walkForwardFolds}
+                  min={2}
+                  step={1}
+                  onChange={(walkForwardFolds) =>
+                    setOptimizerConfig((current) => ({
+                      ...current,
+                      walkForwardFolds,
+                    }))
+                  }
+                />
+                <NumericField
+                  label="Minimum development trades"
+                  value={optimizerConfig.minDevelopmentTrades}
+                  min={5}
+                  step={5}
+                  onChange={(minDevelopmentTrades) =>
+                    setOptimizerConfig((current) => ({
+                      ...current,
+                      minDevelopmentTrades,
+                    }))
+                  }
+                />
+                <NumericField
+                  label="Minimum final-test trades"
+                  value={optimizerConfig.minHoldoutTrades}
+                  min={1}
+                  step={1}
+                  onChange={(minHoldoutTrades) =>
+                    setOptimizerConfig((current) => ({
+                      ...current,
+                      minHoldoutTrades,
+                    }))
+                  }
+                />
+              </div>
+              <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">
+                Re-running after viewing the final segment weakens its status as
+                a sealed test. Lock a chosen recipe, then upload later data for
+                the strongest confirmation.
+              </p>
+            </details>
+
+            {optimization ? (
+              <>
+                <OptimizationResults optimization={optimization} />
+                {optimization.recommendedCandidateId ? (
+                  <div className="mt-4 rounded border border-border bg-background p-3">
+                    <Button
+                      variant="outline"
+                      disabled={!apiKey || advisorLoading}
+                      onClick={async () => {
+                        setAdvisorLoading(true);
+                        setAdvisorError("");
+                        try {
+                          setSystemExplanation(
+                            await explainOptimizedSystemWithGemini({
+                              apiKey,
+                              pattern,
+                              optimization,
+                            }),
+                          );
+                        } catch (error) {
+                          setAdvisorError(
+                            error instanceof Error
+                              ? error.message
+                              : "Gemini system explanation failed.",
+                          );
+                        } finally {
+                          setAdvisorLoading(false);
+                        }
+                      }}
+                    >
+                      <Sparkles className="size-4" aria-hidden="true" />
+                      Explain Winning System in Plain Language
+                    </Button>
+                    {systemExplanation ? (
+                      <div className="mt-3 space-y-3 text-xs">
+                        <h5 className="text-sm font-semibold">
+                          {systemExplanation.title}
+                        </h5>
+                        <ol className="list-decimal space-y-1 pl-5">
+                          {systemExplanation.plainSteps.map((step) => (
+                            <li key={step}>{step}</li>
+                          ))}
+                        </ol>
+                        <details>
+                          <summary className="cursor-pointer font-medium">
+                            Why it passed and Pine Script build brief
+                          </summary>
+                          <p className="mt-2 leading-relaxed text-muted-foreground">
+                            {systemExplanation.whyItPassed}
+                          </p>
+                          <p className="mt-2 whitespace-pre-wrap font-mono text-[11px] leading-relaxed">
+                            {systemExplanation.pineBuildBrief}
+                          </p>
+                          {systemExplanation.warnings.length ? (
+                            <ul className="mt-2 list-disc space-y-1 pl-5 text-warning">
+                              {systemExplanation.warnings.map((warning) => (
+                                <li key={warning}>{warning}</li>
+                              ))}
+                            </ul>
+                          ) : null}
+                        </details>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </>
+            ) : null}
+          </div>
+
           <div className="mt-4 border-t border-border pt-4">
             <p className="mb-2 text-xs text-muted-foreground">
               Optional: connect Gemini to recommend assumptions from the stored
@@ -379,5 +583,155 @@ export function CandidateSystemSimulator({ pattern }: { pattern: Pattern }) {
         </>
       )}
     </section>
+  );
+}
+
+function downloadRecipe(
+  optimization: ReturnType<typeof optimizeCandidateSystem>,
+): void {
+  const recommended = optimization.candidates.find(
+    (candidate) => candidate.id === optimization.recommendedCandidateId,
+  );
+  if (!recommended) return;
+  const blob = new Blob(
+    [
+      JSON.stringify(
+        {
+          optimization,
+          executableRecipe: recommended.recipe.machineReadable,
+        },
+        null,
+        2,
+      ),
+    ],
+    { type: "application/json" },
+  );
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `${optimization.patternId}-executable-system.json`;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+function OptimizationResults({
+  optimization,
+}: {
+  optimization: ReturnType<typeof optimizeCandidateSystem>;
+}) {
+  const recommended = optimization.candidates.find(
+    (candidate) => candidate.id === optimization.recommendedCandidateId,
+  );
+  return (
+    <div className="mt-4 space-y-4">
+      <div
+        className={
+          recommended
+            ? "rounded border border-primary/30 bg-primary/5 p-4"
+            : "rounded border border-warning/30 bg-warning/5 p-4"
+        }
+      >
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              {recommended
+                ? "Recommended candidate"
+                : "No candidate cleared every safeguard"}
+            </div>
+            <p className="mt-1 text-sm font-medium text-foreground">
+              {recommended
+                ? recommended.recipe.oneSentenceRule
+                : "Keep the discoveries as research ideas; do not force a trading system from this pattern yet."}
+            </p>
+          </div>
+          {recommended ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => downloadRecipe(optimization)}
+            >
+              <Download className="size-3.5" aria-hidden="true" />
+              Export Exact Recipe
+            </Button>
+          ) : null}
+        </div>
+        {recommended ? (
+          <ol className="mt-3 list-decimal space-y-1 pl-5 text-xs leading-relaxed text-foreground">
+            {recommended.recipe.steps.map((step) => (
+              <li key={step}>{step}</li>
+            ))}
+          </ol>
+        ) : null}
+        <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">
+          {optimization.integrityWarning}
+        </p>
+      </div>
+
+      <div className="overflow-x-auto rounded border border-border bg-background">
+        <table className="w-full text-xs">
+          <thead className="bg-muted/30 text-muted-foreground">
+            <tr>
+              <th className="px-2 py-2 text-left">Development rank</th>
+              <th className="px-2 py-2 text-left">Execution</th>
+              <th className="px-2 py-2 text-right">Dev trades</th>
+              <th className="px-2 py-2 text-right">Dev exp.</th>
+              <th className="px-2 py-2 text-right">WF folds</th>
+              <th className="px-2 py-2 text-right">Final trades</th>
+              <th className="px-2 py-2 text-right">Final exp.</th>
+              <th className="px-2 py-2 text-right">Final PF</th>
+              <th className="px-2 py-2 text-right">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {optimization.candidates.slice(0, 8).map((candidate) => (
+              <tr key={candidate.id} className="border-t border-border">
+                <td className="px-2 py-2 font-mono">
+                  {candidate.developmentRank}
+                  {candidate.labels.length
+                    ? ` · ${candidate.labels.join(", ")}`
+                    : ""}
+                </td>
+                <td className="px-2 py-2">
+                  {candidate.config.entryMode} · {candidate.config.targetMode} ·{" "}
+                  {candidate.config.maxHoldBars} bars
+                </td>
+                <td className="px-2 py-2 text-right font-mono">
+                  {candidate.development.trades.length}
+                </td>
+                <td className="px-2 py-2 text-right font-mono">
+                  {candidate.development.expectancyR.toFixed(2)}R
+                </td>
+                <td className="px-2 py-2 text-right font-mono">
+                  {candidate.walkForward.profitableFolds}/
+                  {candidate.walkForward.folds}
+                </td>
+                <td className="px-2 py-2 text-right font-mono">
+                  {candidate.sealedHoldout.trades.length}
+                </td>
+                <td className="px-2 py-2 text-right font-mono">
+                  {candidate.sealedHoldout.expectancyR.toFixed(2)}R
+                </td>
+                <td className="px-2 py-2 text-right font-mono">
+                  {candidate.sealedHoldout.profitFactor?.toFixed(2) ?? "—"}
+                </td>
+                <td
+                  className={
+                    candidate.eligible
+                      ? "px-2 py-2 text-right font-semibold text-primary"
+                      : "px-2 py-2 text-right text-muted-foreground"
+                  }
+                >
+                  {candidate.eligible ? "Passed" : "Research only"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        Tested {optimization.candidatesTested} constrained configurations. The
+        final holdout never changes the development rank shown above.
+      </p>
+    </div>
   );
 }

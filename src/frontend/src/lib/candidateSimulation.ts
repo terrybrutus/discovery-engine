@@ -141,6 +141,8 @@ export function simulateCandidateSystem(input: {
   matrix: FeatureMatrix;
   config: CandidateSimulationConfig;
   session: MarketSessionConfig;
+  signalStartIndex?: number;
+  signalEndIndex?: number;
 }): CandidateSimulationResult {
   const { pattern, bars, matrix, config, session } = input;
   const direction = pattern.direction === "bearish" ? -1 : 1;
@@ -158,7 +160,16 @@ export function simulateCandidateSystem(input: {
   const dailyStart = new Map<string, number>();
   const dailyLow = new Map<string, number>();
 
-  for (let signalIndex = 0; signalIndex < bars.length - 1; signalIndex++) {
+  const signalStartIndex = Math.max(0, input.signalStartIndex ?? 0);
+  const signalEndIndex = Math.min(
+    bars.length - 2,
+    input.signalEndIndex ?? bars.length - 2,
+  );
+  for (
+    let signalIndex = signalStartIndex;
+    signalIndex <= signalEndIndex;
+    signalIndex++
+  ) {
     if (!matchesPattern(pattern, matrix, signalIndex)) continue;
     matchingSignals++;
     if (config.nonOverlapping && signalIndex <= blockedThrough) {
@@ -183,7 +194,7 @@ export function simulateCandidateSystem(input: {
       entryPrice = limit;
       entryIndex = -1;
       const expiry = Math.min(
-        bars.length - 1,
+        signalEndIndex,
         signalIndex + Math.max(1, config.entryExpiryBars),
       );
       for (let index = signalIndex + 1; index <= expiry; index++) {
@@ -222,7 +233,7 @@ export function simulateCandidateSystem(input: {
     }
 
     const finalIndex = Math.min(
-      bars.length - 1,
+      signalEndIndex,
       entryIndex + Math.max(1, config.maxHoldBars),
     );
     let exitIndex = finalIndex;

@@ -1,3 +1,4 @@
+import type { CandidateSystemOptimization } from "@/lib/candidateSystemOptimizer";
 import type { Dataset, Pattern, Report, ValidationResult } from "@/types";
 
 function safeName(value: string): string {
@@ -24,6 +25,7 @@ export function buildReportMarkdown(
   patterns: Pattern[],
   validationResults: ValidationResult[],
   datasets: Dataset[],
+  systemOptimizations: Record<string, CandidateSystemOptimization> = {},
 ): string {
   const validationById = new Map(
     validationResults.map((result) => [result.patternId, result]),
@@ -58,6 +60,27 @@ export function buildReportMarkdown(
       `- OOS status: ${pattern.validationStatus ?? (validation?.degraded ? "degraded" : validation ? "held" : "not tested")}`,
       "",
     );
+    const optimization = systemOptimizations[pattern.id];
+    const recommended = optimization?.candidates.find(
+      (candidate) => candidate.id === optimization.recommendedCandidateId,
+    );
+    if (recommended) {
+      lines.push(
+        "#### Executable candidate system",
+        "",
+        recommended.recipe.oneSentenceRule,
+        "",
+        ...recommended.recipe.steps.map(
+          (step, stepIndex) => `${stepIndex + 1}. ${step}`,
+        ),
+        "",
+        `- Walk-forward: ${recommended.walkForward.profitableFolds}/${recommended.walkForward.folds} profitable folds`,
+        `- Sealed holdout trades: ${recommended.sealedHoldout.trades.length}`,
+        `- Sealed holdout expectancy: ${recommended.sealedHoldout.expectancyR.toFixed(2)}R`,
+        `- Sealed holdout profit factor: ${recommended.sealedHoldout.profitFactor?.toFixed(2) ?? "—"}`,
+        "",
+      );
+    }
   });
   return lines.join("\n");
 }
@@ -67,9 +90,16 @@ export function downloadReportMarkdown(
   patterns: Pattern[],
   validationResults: ValidationResult[],
   datasets: Dataset[],
+  systemOptimizations: Record<string, CandidateSystemOptimization> = {},
 ): void {
   downloadText(
-    buildReportMarkdown(report, patterns, validationResults, datasets),
+    buildReportMarkdown(
+      report,
+      patterns,
+      validationResults,
+      datasets,
+      systemOptimizations,
+    ),
     `${safeName(report.datasetName)}.md`,
     "text/markdown;charset=utf-8",
   );
@@ -80,6 +110,7 @@ export function downloadResearchBundle(
   patterns: Pattern[],
   validationResults: ValidationResult[],
   datasets: Dataset[],
+  systemOptimizations: Record<string, CandidateSystemOptimization> = {},
 ): void {
   const bundle = {
     schema: "trading-discovery-research-bundle",
@@ -88,6 +119,7 @@ export function downloadResearchBundle(
     report,
     patterns,
     validationResults,
+    systemOptimizations,
     datasets: datasets.map(({ bars: _bars, ...metadata }) => metadata),
   };
   downloadText(
