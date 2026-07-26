@@ -26,12 +26,12 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 
-// Depth options extend to 6 so deeper feature stacking is available beyond
+// Depth options extend to 6 so direct hypotheses and deeper stacking are
 // the previous cap of 4. The depths are split into two labeled ranges:
-//   - Light (2-4): fewer conditions, faster, broader patterns
+//   - Light (1-4): direct hypotheses through broader patterns
 //   - Deep  (5-6): more conditions, sharper but exponentially more combos
 // Each entry carries its range label so the UI can group them visually.
-const DEPTHS = [2, 3, 4, 5, 6] as const;
+const DEPTHS = [1, 2, 3, 4, 5, 6] as const;
 type DepthRange = "light" | "deep";
 interface DepthOption {
   value: number;
@@ -42,15 +42,17 @@ const DEPTH_OPTIONS: DepthOption[] = DEPTHS.map((d) => ({
   value: d,
   range: d <= 4 ? "light" : "deep",
   label:
-    d === 2
-      ? "Simple"
-      : d === 3
-        ? "Balanced"
-        : d === 4
-          ? "Deep"
-          : d === 5
-            ? "Deeper"
-            : "Maximal",
+    d === 1
+      ? "Hypothesis"
+      : d === 2
+        ? "Simple"
+        : d === 3
+          ? "Balanced"
+          : d === 4
+            ? "Deep"
+            : d === 5
+              ? "Deeper"
+              : "Maximal",
 }));
 
 const LENS_DESCRIPTIONS: Record<string, string> = {
@@ -608,15 +610,15 @@ export function DiscoveryControls({
           </span>
         </div>
 
-        {/* Light range (2-4): fewer conditions, faster, broader patterns */}
+        {/* Light range (1-4): direct hypotheses through broader patterns */}
         <div className="flex flex-col gap-1.5">
           <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-            Light (2–4)
+            Light (1–4)
           </span>
           <div
             role="radiogroup"
-            aria-label="Light pattern depth: 2 to 4 conditions"
-            className="grid grid-cols-3 gap-2"
+            aria-label="Light pattern depth: 1 to 4 conditions"
+            className="grid grid-cols-4 gap-2"
           >
             {lightOptions.map(renderDepthButton)}
           </div>
@@ -637,9 +639,9 @@ export function DiscoveryControls({
         </div>
 
         <p className="text-xs text-muted-foreground">
-          More conditions find sharper patterns but test exponentially more
-          combinations. Light (2–4) is fast and broad; Deep (5–6) is sharper but
-          slower and needs a larger dataset.
+          Hypothesis tests one relationship directly. More conditions find
+          sharper patterns but test exponentially more combinations. Light (1–4)
+          is broad; Deep (5–6) is slower and needs a larger dataset.
         </p>
       </div>
 

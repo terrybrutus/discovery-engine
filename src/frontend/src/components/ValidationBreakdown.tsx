@@ -6,7 +6,10 @@ import {
   ChartTooltipContent,
 } from "@/components/ui/chart";
 import { cn } from "@/lib/utils";
-import { validationHeldUp } from "@/lib/validationPolicy";
+import {
+  validationFailureReason,
+  validationHeldUp,
+} from "@/lib/validationPolicy";
 import type { PatternMetrics, ValidationResult } from "@/types";
 import { TrendingDown, TrendingUp, X } from "lucide-react";
 import { useMemo } from "react";
@@ -555,7 +558,7 @@ function buildSummary(r: ValidationResult): string {
     );
   } else if (!validationHeldUp(r)) {
     parts.push(
-      `This pattern did not clear the reliability rule: its out-of-sample win rate was ${r.outOfSampleMetrics.winRate.toFixed(1)}%.`,
+      `This pattern did not clear the reliability rule because it ${validationFailureReason(r)}.`,
     );
   } else {
     parts.push(

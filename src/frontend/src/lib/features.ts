@@ -20,6 +20,7 @@ import type {
 // ---------------------------------------------------------------------------
 
 const TIME_BUCKETS = [
+  "Outside RTH",
   "9:30-10:00",
   "10:00-10:30",
   "10:30-11:00",
@@ -35,12 +36,32 @@ const TIME_BUCKETS = [
   "15:30-16:00",
 ];
 
-// Session open/close in local wall-clock hours (ET-ish). Kept in sync with
-// sampleData.ts so feature buckets align with the generated sessions.
+// Session conventions for the index-CFD/futures research profile. Use an
+// explicit timezone so results do not change with the browser's location.
 const SESSION_OPEN_HOUR = 9;
 const SESSION_OPEN_MIN = 30;
+const RTH_CLOSE_HOUR = 16;
+const RESEARCH_TIME_ZONE = "America/New_York";
+const TRADING_DAY_START_HOUR = 18;
+const TRADING_DAY_SHIFT_MS = (24 - TRADING_DAY_START_HOUR) * 60 * 60 * 1000;
+const NEW_YORK_PARTS = new Intl.DateTimeFormat("en-US", {
+  timeZone: RESEARCH_TIME_ZONE,
+  hourCycle: "h23",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+const NEW_YORK_DATE = new Intl.DateTimeFormat("en-CA", {
+  timeZone: RESEARCH_TIME_ZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
 
 const SESSION_PHASE_BUCKETS = [
+  "Overnight",
   "Open",
   "Morning",
   "Lunch",
@@ -443,6 +464,65 @@ export function generateFeatures(
       "(close - previous_day_low) / ATR(14)",
     ),
     f(
+      "distance_to_pds_mid_atr",
+      "Distance to Previous Session Midpoint (ATR)",
+      "Levels & Sessions",
+      "Distance from close to the midpoint of the previous trading-session range, in ATR units.",
+      "numeric",
+      "(close - midpoint(previous_session_high, previous_session_low)) / ATR(14)",
+    ),
+    f(
+      "adjusted_pds_box_state",
+      "Gap-Adjusted Previous Session Box State",
+      "Levels & Sessions",
+      "Whether the previous-session box is original or has been causally redrawn to the first confirmed pivot after a gap beyond its boundary.",
+      "categorical",
+      "Original box unless the session opens outside the previous-session range; after a 2-left/2-right pivot is confirmed, replace the gapped boundary with that pivot",
+      {
+        buckets: [
+          "Original Box",
+          "Gap Up Awaiting Pivot",
+          "Gap Down Awaiting Pivot",
+          "Gap Up Adjusted",
+          "Gap Down Adjusted",
+        ],
+      },
+    ),
+    f(
+      "adjusted_pds_box_position",
+      "Gap-Adjusted Previous Session Box Position",
+      "Levels & Sessions",
+      "Where close sits within the causally available original or gap-adjusted previous-session box (0 = lower boundary, 100 = upper boundary).",
+      "numeric",
+      "(close - adjusted_box_low) / (adjusted_box_high - adjusted_box_low) * 100",
+      { range: [0, 100] },
+    ),
+    f(
+      "distance_to_adjusted_pds_mid_atr",
+      "Distance to Gap-Adjusted Session Midpoint (ATR)",
+      "Levels & Sessions",
+      "Distance from close to the midpoint of the causally available original or gap-adjusted session box, in ATR units.",
+      "numeric",
+      "(close - midpoint(adjusted_box_high, adjusted_box_low)) / ATR(14)",
+    ),
+    f(
+      "adjusted_pds_level_event",
+      "Gap-Adjusted Session Level Event",
+      "Levels & Sessions",
+      "Rejection at an adjusted box boundary or a crossing of its midpoint.",
+      "categorical",
+      "Current OHLC and prior close compared with the causally available adjusted upper, lower, and midpoint levels",
+      {
+        buckets: [
+          "None",
+          "Rejected Upper",
+          "Rejected Lower",
+          "Crossed Above Midpoint",
+          "Crossed Below Midpoint",
+        ],
+      },
+    ),
+    f(
       "box_position",
       "Rolling Box Position",
       "Levels & Sessions",
@@ -494,16 +574,16 @@ export function generateFeatures(
       "or_size_pct",
       "Opening Range Size %",
       "Opening Range",
-      "Size of the first 30-minute opening range as a percent of price.",
+      "Size of the 09:30-10:00 New York opening range as a percent of price.",
       "numeric",
-      "Opening Range Size % = (OR_high - OR_low) / close * 100, where OR uses the first 30 elapsed minutes of the session",
+      "Opening Range Size % = (OR_high - OR_low) / close * 100, where OR uses 09:30-10:00 America/New_York",
       { range: [0, 5] },
     ),
     f(
       "or_breakout",
       "Opening Range Breakout",
       "Opening Range",
-      "Whether price has broken out of the opening range, and in which direction.",
+      "Whether price has broken the completed 09:30-10:00 New York opening range, and in which direction.",
       "categorical",
       "Opening Range Breakout = 'Up' if high > OR_high, 'Down' if low < OR_low, 'Both' if both, else 'None'",
       { buckets: OR_BREAKOUT_BUCKETS },
@@ -688,19 +768,44 @@ function bucketize(value: number, edges: number[], labels: string[]): string {
   return labels[labels.length - 1];
 }
 
+function newYorkParts(ts: number): {
+  hour: number;
+  minute: number;
+} {
+  const parts = NEW_YORK_PARTS.formatToParts(new Date(ts));
+  const values = new Map(parts.map((part) => [part.type, part.value]));
+  return {
+    hour: Number(values.get("hour") ?? 0),
+    minute: Number(values.get("minute") ?? 0),
+  };
+}
+
+function tradingDayKey(ts: number): string {
+  // A six-hour wall-clock shift maps the 18:00→17:59 New York session to
+  // one calendar label while retaining DST-aware date formatting.
+  return NEW_YORK_DATE.format(new Date(ts + TRADING_DAY_SHIFT_MS));
+}
+
 function timeOfDayBucket(ts: number): string {
-  const d = new Date(ts);
-  const minutes = d.getHours() * 60 + d.getMinutes();
+  const parts = newYorkParts(ts);
+  const minutes = parts.hour * 60 + parts.minute;
   const sessionStart = SESSION_OPEN_HOUR * 60 + SESSION_OPEN_MIN; // 570
+  const sessionEnd = RTH_CLOSE_HOUR * 60;
+  if (minutes < sessionStart || minutes >= sessionEnd) return "Outside RTH";
   const offset = minutes - sessionStart;
-  if (offset < 0) return TIME_BUCKETS[0];
-  const idx = Math.min(TIME_BUCKETS.length - 1, Math.floor(offset / 30));
-  return TIME_BUCKETS[idx];
+  const idx = Math.min(TIME_BUCKETS.length - 2, Math.floor(offset / 30));
+  return TIME_BUCKETS[idx + 1];
 }
 
 function sessionPhaseBucket(ts: number): string {
-  const d = new Date(ts);
-  const minutes = d.getHours() * 60 + d.getMinutes();
+  const parts = newYorkParts(ts);
+  const minutes = parts.hour * 60 + parts.minute;
+  if (
+    minutes < SESSION_OPEN_HOUR * 60 + SESSION_OPEN_MIN ||
+    minutes >= RTH_CLOSE_HOUR * 60
+  ) {
+    return "Overnight";
+  }
   if (minutes < 10 * 60) return "Open";
   if (minutes < 11 * 60 + 30) return "Morning";
   if (minutes < 13 * 60) return "Lunch";
@@ -709,12 +814,14 @@ function sessionPhaseBucket(ts: number): string {
 }
 
 function weekdayBucket(ts: number): string {
-  const d = new Date(ts).getDay(); // 0=Sun
+  const d = new Date(`${tradingDayKey(ts)}T12:00:00Z`).getUTCDay(); // 0=Sun
   return WEEKDAY_BUCKETS[Math.max(0, d - 1)] ?? "Mon";
 }
 
 function monthBucket(ts: number): string {
-  return MONTH_BUCKETS[new Date(ts).getMonth()];
+  return MONTH_BUCKETS[
+    new Date(`${tradingDayKey(ts)}T12:00:00Z`).getUTCMonth()
+  ];
 }
 
 /**
@@ -756,28 +863,86 @@ export function computeFeatureValues(
   // Rolling closes for SMA/stdev (Bollinger, trend).
   const closes = bars.map((b) => b.close);
 
-  // Opening range per day, measured by elapsed time rather than a fixed
-  // number of bars so 1m/5m/15m/60m files do not describe different periods.
-  const OPENING_RANGE_MS = 30 * 60 * 1000;
+  // New York RTH opening range (09:30-10:00), measured by wall-clock time
+  // rather than by "the first N bars" or the start of a UTC calendar day.
   const orHighByBar = new Array<number | null>(bars.length).fill(null);
   const orLowByBar = new Array<number | null>(bars.length).fill(null);
   const orSizeByBar = new Array<number | null>(bars.length).fill(null);
   for (const day of dayIndex) {
-    const cutoff = bars[day.start].timestamp + OPENING_RANGE_MS;
-    let orEnd = day.start;
-    while (orEnd + 1 <= day.end && bars[orEnd + 1].timestamp < cutoff) {
-      orEnd++;
+    const openingBars: number[] = [];
+    let firstAfterOpeningRange = -1;
+    for (let i = day.start; i <= day.end; i++) {
+      const parts = newYorkParts(bars[i].timestamp);
+      const minutes = parts.hour * 60 + parts.minute;
+      if (minutes >= 9 * 60 + 30 && minutes < 10 * 60) {
+        openingBars.push(i);
+      } else if (minutes >= 10 * 60 && minutes < RTH_CLOSE_HOUR * 60) {
+        if (firstAfterOpeningRange < 0) firstAfterOpeningRange = i;
+      }
     }
+    if (openingBars.length === 0 || firstAfterOpeningRange < 0) continue;
     let hi = Number.NEGATIVE_INFINITY;
     let lo = Number.POSITIVE_INFINITY;
-    for (let i = day.start; i <= orEnd; i++) {
+    for (const i of openingBars) {
       hi = Math.max(hi, bars[i].high);
       lo = Math.min(lo, bars[i].low);
     }
-    for (let i = orEnd + 1; i <= day.end; i++) {
+    for (let i = firstAfterOpeningRange; i <= day.end; i++) {
+      const parts = newYorkParts(bars[i].timestamp);
+      const minutes = parts.hour * 60 + parts.minute;
+      if (minutes >= RTH_CLOSE_HOUR * 60) break;
       orHighByBar[i] = hi;
       orLowByBar[i] = lo;
       orSizeByBar[i] = hi - lo;
+    }
+  }
+
+  // Previous-session box with the optional gap/pivot redraw used by common
+  // session-box methods. The replacement boundary becomes available only
+  // after a 2-left/2-right pivot is confirmed, preventing look-ahead.
+  const adjustedPdsHigh = new Array<number | null>(bars.length).fill(null);
+  const adjustedPdsLow = new Array<number | null>(bars.length).fill(null);
+  const adjustedPdsState = new Array<string | null>(bars.length).fill(null);
+  for (const day of dayIndex) {
+    if (day.dayIdx === 0) continue;
+    const previous = dayIndex[day.dayIdx - 1];
+    const gapUp = day.open > previous.high;
+    const gapDown = day.open < previous.low;
+    let pivotBoundary: number | null = null;
+    for (let i = day.start; i <= day.end; i++) {
+      const pivotIndex = i - 2;
+      if (pivotBoundary == null && pivotIndex - 2 >= day.start) {
+        if (
+          gapUp &&
+          bars[pivotIndex].high > bars[pivotIndex - 1].high &&
+          bars[pivotIndex].high >= bars[pivotIndex - 2].high &&
+          bars[pivotIndex].high > bars[pivotIndex + 1].high &&
+          bars[pivotIndex].high >= bars[pivotIndex + 2].high
+        ) {
+          pivotBoundary = bars[pivotIndex].high;
+        } else if (
+          gapDown &&
+          bars[pivotIndex].low < bars[pivotIndex - 1].low &&
+          bars[pivotIndex].low <= bars[pivotIndex - 2].low &&
+          bars[pivotIndex].low < bars[pivotIndex + 1].low &&
+          bars[pivotIndex].low <= bars[pivotIndex + 2].low
+        ) {
+          pivotBoundary = bars[pivotIndex].low;
+        }
+      }
+      adjustedPdsHigh[i] =
+        gapUp && pivotBoundary != null ? pivotBoundary : previous.high;
+      adjustedPdsLow[i] =
+        gapDown && pivotBoundary != null ? pivotBoundary : previous.low;
+      adjustedPdsState[i] = gapUp
+        ? pivotBoundary == null
+          ? "Gap Up Awaiting Pivot"
+          : "Gap Up Adjusted"
+        : gapDown
+          ? pivotBoundary == null
+            ? "Gap Down Awaiting Pivot"
+            : "Gap Down Adjusted"
+          : "Original Box";
     }
   }
 
@@ -977,6 +1142,47 @@ export function computeFeatureValues(
         currentAtr > 1e-12 ? (bar.close - prev.high) / currentAtr : undefined;
       matrix.distance_to_pdl_atr[i] =
         currentAtr > 1e-12 ? (bar.close - prev.low) / currentAtr : undefined;
+      const previousMidpoint = (prev.high + prev.low) / 2;
+      matrix.distance_to_pds_mid_atr[i] =
+        currentAtr > 1e-12
+          ? (bar.close - previousMidpoint) / currentAtr
+          : undefined;
+      const adjustedHigh = adjustedPdsHigh[i];
+      const adjustedLow = adjustedPdsLow[i];
+      if (
+        adjustedHigh != null &&
+        adjustedLow != null &&
+        adjustedHigh > adjustedLow
+      ) {
+        const adjustedRange = adjustedHigh - adjustedLow;
+        const adjustedMidpoint = (adjustedHigh + adjustedLow) / 2;
+        matrix.adjusted_pds_box_state[i] =
+          adjustedPdsState[i] ?? "Original Box";
+        matrix.adjusted_pds_box_position[i] =
+          ((bar.close - adjustedLow) / adjustedRange) * 100;
+        matrix.distance_to_adjusted_pds_mid_atr[i] =
+          currentAtr > 1e-12
+            ? (bar.close - adjustedMidpoint) / currentAtr
+            : undefined;
+        matrix.adjusted_pds_level_event[i] = "None";
+        if (bar.high > adjustedHigh && bar.close < adjustedHigh) {
+          matrix.adjusted_pds_level_event[i] = "Rejected Upper";
+        } else if (bar.low < adjustedLow && bar.close > adjustedLow) {
+          matrix.adjusted_pds_level_event[i] = "Rejected Lower";
+        } else if (
+          i > dayIndex[myDay.dayIdx].start &&
+          bars[i - 1].close <= adjustedMidpoint &&
+          bar.close > adjustedMidpoint
+        ) {
+          matrix.adjusted_pds_level_event[i] = "Crossed Above Midpoint";
+        } else if (
+          i > dayIndex[myDay.dayIdx].start &&
+          bars[i - 1].close >= adjustedMidpoint &&
+          bar.close < adjustedMidpoint
+        ) {
+          matrix.adjusted_pds_level_event[i] = "Crossed Below Midpoint";
+        }
+      }
       matrix.prev_day_level_event[i] = "None";
       if (bar.high > prev.high && bar.close < prev.high) {
         matrix.prev_day_level_event[i] = "Swept PDH";
@@ -1063,7 +1269,7 @@ export function computeFeatureValues(
     if (myDay && myDay.dayIdx > 0) {
       const prev = dayIndex[myDay.dayIdx - 1];
       const gapPct =
-        prev.close > 0 ? ((bar.open - prev.close) / prev.close) * 100 : 0;
+        prev.close > 0 ? ((myDay.open - prev.close) / prev.close) * 100 : 0;
       matrix.gap_size_pct[i] = gapPct;
       matrix.gap_direction[i] =
         Math.abs(gapPct) < 0.05 ? "Flat" : gapPct > 0 ? "Up" : "Down";
@@ -1237,6 +1443,7 @@ export function computeFeatureValues(
 interface DayBucket {
   start: number;
   end: number;
+  open: number;
   high: number;
   low: number;
   close: number;
@@ -1246,14 +1453,13 @@ interface DayBucket {
 function buildDayIndex(bars: OHLCVBar[]): DayBucket[] {
   const days: DayBucket[] = [];
   let cur: DayBucket | null = null;
-  let lastDay = -1;
+  let lastDay = "";
   for (let i = 0; i < bars.length; i++) {
-    // UTC-safe day bucketing: days since the Unix epoch in UTC. This is
-    // independent of the host timezone, so uploaded CSVs land in the correct
-    // day bucket regardless of where the user's browser runs. (The previous
-    // new Date(ts).getDate() used the local calendar day, which split or
-    // merged sessions incorrectly across timezones.)
-    const d = Math.floor(bars[i].timestamp / 86400000);
+    // Index CFDs and futures trade across UTC midnight. Group their research
+    // day from 18:00 New York through 17:59 the following day so previous-day
+    // levels, gaps, VWAP, and session boxes use the actual trading session
+    // rather than an arbitrary UTC-calendar boundary.
+    const d = tradingDayKey(bars[i].timestamp);
     if (d !== lastDay) {
       if (cur) {
         cur.end = i - 1;
@@ -1262,6 +1468,7 @@ function buildDayIndex(bars: OHLCVBar[]): DayBucket[] {
       cur = {
         start: i,
         end: i,
+        open: bars[i].open,
         high: bars[i].high,
         low: bars[i].low,
         close: bars[i].close,

@@ -518,7 +518,7 @@ export interface ValidationResult {
 }
 
 export interface DiscoveryConfig {
-  maxDepth: number; // 2-6
+  maxDepth: number; // 1-6
   minSampleSize: number;
   minWinRate: number; // 0-100
   enabledCategories: FeatureCategory[];

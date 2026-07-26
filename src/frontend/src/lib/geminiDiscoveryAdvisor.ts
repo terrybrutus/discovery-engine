@@ -157,7 +157,7 @@ export async function recommendDiscoverySettingsWithGemini(input: {
     "Use only dataset IDs and relationship categories explicitly supplied below.",
     "Choose targetMode=single with the lowest practical execution timeframe when multiple timeframes of the same instrument are intended for top-down confluence. Choose targetMode=all when comparable datasets should each supply independent outcomes, such as a same-timeframe symbol universe.",
     "Enable only categories that materially match the uploaded fields and the stated research goal. Multi-Timeframe must remain enabled when multiple sources are used.",
-    "Prefer maxDepth 2 for a broad/large first pass and 3 for balanced targeted work. Depth 4+ should be exceptional because it is slow and increases false discoveries.",
+    "Use maxDepth 1 only when the stated goal is a direct one-relationship hypothesis test. Prefer maxDepth 2 for a broad/large first pass and 3 for balanced targeted work. Depth 4+ should be exceptional because it is slow and increases false discoveries.",
     "Use Auto-find holds unless the user explicitly requests a fixed horizon. Recommend non-overlapping execution for candidate-system screening.",
     "Minimum sample and win-rate settings are discovery filters, not guarantees. Avoid making the first pass so restrictive that it finds nothing.",
     "Costs are an estimated all-in round trip in basis points. If the schema does not identify an instrument-specific cost, use a conservative 5 bps and say that it must be customized.",
@@ -261,7 +261,7 @@ export async function recommendDiscoverySettingsWithGemini(input: {
       input.currentConfig.minWinRate,
     ),
     maxDepth: Math.round(
-      clamp(decoded.maxDepth, 2, 6, input.currentConfig.maxDepth),
+      clamp(decoded.maxDepth, 1, 6, input.currentConfig.maxDepth),
     ),
     holdWindowAutoFind: decoded.holdWindowAutoFind !== false,
     roundTripCostBps: clamp(

@@ -70,7 +70,7 @@ export default function ValidationPage() {
           description="Run Pattern Discovery first to find candidate patterns. Validation then re-tests the top patterns on unseen data to see which ones actually hold up."
           actionLabel="Go to Pattern Discovery"
           onAction={() => setActiveTab("discovery")}
-          hint="Validation splits your data 70/30 chronologically — the first 70% trains, the last 30% tests."
+          hint="Discovery trains on the oldest 70%. Validation tests the untouched newest 30% and requires survival in at least 3 of 4 walk-forward folds."
         />
       </div>
     );
@@ -208,7 +208,7 @@ function SummaryBar({
         <span className="font-mono tabular-nums font-semibold text-primary">
           {heldUp}
         </span>{" "}
-        held up out-of-sample.
+        cleared the untouched holdout and walk-forward reliability rules.
       </p>
     </div>
   );
@@ -229,8 +229,8 @@ function ComputingState() {
           Validating patterns…
         </p>
         <p className="text-sm text-muted-foreground">
-          Splitting the dataset 70/30 and re-testing each top pattern on both
-          halves.
+          Re-testing frozen training-period patterns on the untouched newest 30%
+          and across expanding walk-forward folds.
         </p>
       </div>
     </div>

@@ -17,16 +17,21 @@ try {
   const { buildMultiTimeframeResearchSpace } = await server.ssrLoadModule(
     "/src/lib/multiTimeframe.ts",
   );
-  const { analyzePatternHorizons } = await server.ssrLoadModule(
+  const { analyzePatternHorizons, runDiscovery } = await server.ssrLoadModule(
     "/src/lib/discovery.ts",
   );
   const { meetsConfluenceRequirement } = await server.ssrLoadModule(
     "/src/lib/patternConfluence.ts",
   );
+  const { validationHeldUp } = await server.ssrLoadModule(
+    "/src/lib/validationPolicy.ts",
+  );
   const {
     collectResearchCategories,
     requireMultiTimeframeCategory,
   } = await server.ssrLoadModule("/src/lib/researchCategories.ts");
+  const { computeFeatureValues, generateFeatures } =
+    await server.ssrLoadModule("/src/lib/features.ts");
 
   const makeCsv = (start, minutes, rows) => {
     const lines = ["time,open,high,low,close"];
@@ -190,6 +195,133 @@ try {
     throw new Error("Runtime did not repair a stale multi-source lens config.");
   }
 
+  // Session-semantics regression: index CFDs cross UTC midnight, but their
+  // research day runs 18:00 New York through 17:59. Previous-day levels,
+  // session gap, time buckets, and the 09:30-10:00 opening range must all use
+  // that convention rather than UTC calendar dates or every bar's open.
+  const sessionBars = [
+    {
+      timestamp: Date.parse("2026-01-04T18:00:00-05:00"),
+      open: 100,
+      high: 102,
+      low: 99,
+      close: 101,
+      volume: 1,
+    },
+    {
+      timestamp: Date.parse("2026-01-05T09:30:00-05:00"),
+      open: 104,
+      high: 106,
+      low: 103,
+      close: 105,
+      volume: 1,
+    },
+    {
+      timestamp: Date.parse("2026-01-05T09:45:00-05:00"),
+      open: 105,
+      high: 108,
+      low: 102,
+      close: 107,
+      volume: 1,
+    },
+    {
+      timestamp: Date.parse("2026-01-05T10:00:00-05:00"),
+      open: 107,
+      high: 107.5,
+      low: 104,
+      close: 106,
+      volume: 1,
+    },
+    {
+      timestamp: Date.parse("2026-01-05T17:45:00-05:00"),
+      open: 106,
+      high: 107,
+      low: 105,
+      close: 107,
+      volume: 1,
+    },
+    {
+      timestamp: Date.parse("2026-01-05T18:00:00-05:00"),
+      open: 110,
+      high: 111,
+      low: 109,
+      close: 110,
+      volume: 1,
+    },
+    {
+      timestamp: Date.parse("2026-01-06T09:30:00-05:00"),
+      open: 110,
+      high: 113,
+      low: 109,
+      close: 112,
+      volume: 1,
+    },
+    {
+      timestamp: Date.parse("2026-01-06T09:45:00-05:00"),
+      open: 112,
+      high: 114,
+      low: 108,
+      close: 109,
+      volume: 1,
+    },
+    {
+      timestamp: Date.parse("2026-01-06T10:00:00-05:00"),
+      open: 109,
+      high: 111,
+      low: 107,
+      close: 108,
+      volume: 1,
+    },
+    {
+      timestamp: Date.parse("2026-01-06T10:15:00-05:00"),
+      open: 108,
+      high: 110,
+      low: 106,
+      close: 107,
+      volume: 1,
+    },
+    {
+      timestamp: Date.parse("2026-01-06T10:30:00-05:00"),
+      open: 107,
+      high: 109,
+      low: 105,
+      close: 106,
+      volume: 1,
+    },
+  ];
+  const sessionCatalog = generateFeatures(sessionBars);
+  const sessionMatrix = computeFeatureValues(sessionBars, sessionCatalog);
+  const expectedGapPct = ((110 - 107) / 107) * 100;
+  if (
+    Math.abs(sessionMatrix.gap_size_pct[5] - expectedGapPct) > 1e-9 ||
+    Math.abs(sessionMatrix.gap_size_pct[8] - expectedGapPct) > 1e-9
+  ) {
+    throw new Error("Session gap was not frozen from the 18:00 opening print.");
+  }
+  if (
+    sessionMatrix.prev_day_level_state[5] !== "Above PDH" ||
+    sessionMatrix.time_of_day[5] !== "Outside RTH"
+  ) {
+    throw new Error("New York trading-session boundaries were not respected.");
+  }
+  if (
+    sessionMatrix.or_breakout[7] != null ||
+    sessionMatrix.or_size_pct[8] == null ||
+    Math.abs(sessionMatrix.or_size_pct[8] - (6 / 108) * 100) > 1e-9
+  ) {
+    throw new Error("Opening range was not anchored to 09:30-10:00 New York.");
+  }
+  if (
+    sessionMatrix.adjusted_pds_box_state[8] !== "Gap Up Awaiting Pivot" ||
+    sessionMatrix.adjusted_pds_box_state[10] !== "Gap Up Adjusted" ||
+    Math.abs(sessionMatrix.adjusted_pds_box_position[10] - ((106 - 99) / 15) * 100) >
+      1e-9
+  ) {
+    throw new Error(
+      "Gap-adjusted session box did not wait for and then apply the confirmed pivot.",
+    );
+  }
+
   // Execution-horizon regression: the deterministic event rises most
   // efficiently for five 1m bars, then fades and is losing by 21 bars. Auto
   // recommendation must select 5 rather than drifting to the longest option.
@@ -264,6 +396,97 @@ try {
     throw new Error("The losing 21-bar control was not measured correctly.");
   }
 
+  // Direct-hypothesis regression: a one-condition research question must be
+  // discoverable without adding an unrelated second condition.
+  const hypothesisBars = Array.from({ length: 401 }, (_, index) => {
+    const close = 100 + Math.floor(index / 10) * 0.05 + (index % 2 ? -0.1 : 0);
+    return {
+      timestamp: Date.parse("2026-01-05T09:30:00Z") + index * 60_000,
+      open: close,
+      high: close + 0.02,
+      low: close - 0.02,
+      close,
+    };
+  });
+  const hypothesisFeature = {
+    id: "direct_hypothesis",
+    name: "Direct Hypothesis",
+    category: "Test",
+    description: "",
+    type: "categorical",
+    enabled: true,
+    formula: "deterministic test signal",
+    buckets: ["Active", "Inactive"],
+    originDatasetId: "test-1m",
+    originTimeframe: "1m",
+  };
+  const hypothesisValues = hypothesisBars.map((_, index) =>
+    index % 10 === 0 ? "Active" : "Inactive",
+  );
+  const directPatterns = await runDiscovery(
+    hypothesisBars,
+    [hypothesisFeature],
+    { direct_hypothesis: hypothesisValues },
+    {
+      maxDepth: 1,
+      minSampleSize: 30,
+      minWinRate: 55,
+      enabledCategories: ["Test"],
+      horizon: 1,
+      maxCombinations: 10,
+      mfeMaeWindow: 1,
+      minMfeMaeRatio: 0,
+      mfeMaeRatioEnabled: false,
+      mfeMaeRatioMode: "off",
+      holdWindowAutoFind: false,
+      outcomeTargetsPct: [0.1],
+      outcomeStopsPct: [0.1],
+      walkForwardFolds: 3,
+      roundTripCostBps: 0,
+      costFilterEnabled: false,
+      minNetMovePct: 0,
+      minGrossCostMultiple: 0,
+      executionView: "every-match",
+      requireCrossSourceConfluence: false,
+      minConfluenceSources: 1,
+    },
+    () => {},
+    () => false,
+  );
+  if (
+    !directPatterns.some(
+      (pattern) =>
+        pattern.conditions.length === 1 &&
+        pattern.conditions[0].featureId === "direct_hypothesis",
+    )
+  ) {
+    throw new Error("Direct one-condition hypothesis was not discoverable.");
+  }
+  const validationControl = {
+    degraded: false,
+    outOfSampleMetrics: {
+      sampleSize: 30,
+      winRate: 65,
+      avgMove: 0.2,
+      avgMAE: 0.1,
+      avgMFE: 0.2,
+      direction: "bullish",
+    },
+    walkForward: {
+      folds: 4,
+      passedFolds: 2,
+      meanWinRate: 60,
+      worstWinRate: 40,
+    },
+  };
+  if (validationHeldUp(validationControl)) {
+    throw new Error("Two of four walk-forward folds incorrectly passed.");
+  }
+  validationControl.walkForward.passedFolds = 3;
+  if (!validationHeldUp(validationControl)) {
+    throw new Error("Three of four walk-forward folds should pass.");
+  }
+
   console.log(
     JSON.stringify(
       {
@@ -277,8 +500,17 @@ try {
         singleSourceRejected: true,
         crossSourceAccepted: true,
         multiTimeframeLensPreserved: true,
+        sessionGapPct: sessionMatrix.gap_size_pct[8],
+        overnightBucket: sessionMatrix.time_of_day[5],
+        openingRangeSizePct: sessionMatrix.or_size_pct[8],
+        adjustedBoxStateBeforeConfirmation:
+          sessionMatrix.adjusted_pds_box_state[8],
+        adjustedBoxStateAfterConfirmation:
+          sessionMatrix.adjusted_pds_box_state[10],
         recommendedExecutionHold: horizonAnalysis.recommendedHorizon,
         losingLongHoldNetPct: twentyOne.avgNetMove,
+        directHypothesisPatterns: directPatterns.length,
+        walkForwardReliabilityGate: "3/4 folds",
       },
       null,
       2,

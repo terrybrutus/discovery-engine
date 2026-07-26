@@ -25,7 +25,7 @@ import type {
 
 // ---------------------------------------------------------------------------
 // Pattern discovery engine.
-// Generates combinations of 2-6 conditions across enabled features, finds all
+// Generates combinations of 1-6 conditions across enabled features, finds all
 // bars matching ALL conditions, measures forward return outcome, and ranks
 // patterns by statistical strength. Supports cancellation + progress.
 //
@@ -1557,7 +1557,7 @@ export function buildEventPriorityCombinations(
 }
 
 /**
- * Run pattern discovery. Generates combinations of 2-maxDepth conditions
+ * Run pattern discovery. Generates combinations of 1-maxDepth conditions
  * across enabled features, evaluates each, and returns ranked patterns.
  *
  * The function is async and yields to the main thread between chunks via
@@ -1629,9 +1629,11 @@ export async function runDiscovery(
     return [];
   }
 
-  // Build combination list across depths 2..maxDepth.
+  // Include depth 1 so a direct hypothesis can be measured without forcing an
+  // unrelated second condition. Cross-source runs still enforce their minimum
+  // source count in evaluateAllPatterns.
   const depths: number[] = [];
-  for (let d = 2; d <= config.maxDepth; d++) depths.push(d);
+  for (let d = 1; d <= config.maxDepth; d++) depths.push(d);
 
   let totalCombos = 0;
   const perDepth: number[] = [];
