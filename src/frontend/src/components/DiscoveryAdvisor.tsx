@@ -99,11 +99,14 @@ export function DiscoveryAdvisor({
       <div className="flex items-start gap-2">
         <BrainCircuit className="mt-0.5 size-4 shrink-0 text-primary" />
         <div>
-          <h3 className="text-sm font-semibold">Recommend my settings</h3>
+          <h3 className="text-sm font-semibold">
+            Optional AI research refinement
+          </h3>
           <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
-            Gemini reviews only your file names, timeframes, column metadata,
-            definitions, and available relationships. It suggests what to
-            enable; the engine still performs every calculation.
+            The deterministic automatic plan is already ready. Gemini can refine
+            it for a specific goal using only file names, timeframes, column
+            metadata, definitions, and available relationships; the engine still
+            performs every calculation.
           </p>
         </div>
       </div>

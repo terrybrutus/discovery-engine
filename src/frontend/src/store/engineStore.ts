@@ -91,6 +91,23 @@ const DEFAULT_PROGRESS: DiscoveryProgress = {
   estimatedRemainingMs: 0,
 };
 
+export interface AutomaticResearchPlan {
+  datasetCount: number;
+  totalBars: number;
+  rawFeatureCount: number;
+  usableFeatureCount: number;
+  excludedSparseOrConstant: number;
+  excludedDuplicates: number;
+  enabledCategories: FeatureCategory[];
+  minSampleSize: number;
+  minWinRate: number;
+  maxDepth: number;
+  maxCombinations: number;
+  holdWindowAutoFind: boolean;
+  executionView: "non-overlapping";
+  rationale: string[];
+}
+
 interface EngineState {
   // ---- State ----
   /**
@@ -127,6 +144,10 @@ interface EngineState {
   report: Report | null;
   discoveryConfig: DiscoveryConfig;
   discoveryProgress: DiscoveryProgress;
+  /** Deterministic schema/data-based first-pass plan applied after generation. */
+  automaticResearchPlan: AutomaticResearchPlan | null;
+  /** True after the user or Gemini changes the automatically applied plan. */
+  researchPlanCustomized: boolean;
   activeTab: TabId;
   completedSteps: CompletedSteps;
   isComputing: boolean;
@@ -181,6 +202,7 @@ interface EngineState {
   clearCrossReferenceResults: () => void;
   setActiveTab: (tab: TabId) => void;
   updateConfig: (patch: Partial<DiscoveryConfig>) => void;
+  applyAutomaticResearchPlan: () => void;
   cancelDiscovery: () => void;
   resetSession: () => void;
   restoreRecoveryAction: () => Promise<void>;
@@ -260,10 +282,16 @@ function prefixSeries(
   });
 }
 
-function buildDatasetFeatures(
+export function buildDatasetFeatures(
   dataset: Dataset,
   overrides: FeatureOverrides,
-): { features: Feature[]; matrix: FeatureMatrix } {
+): {
+  features: Feature[];
+  matrix: FeatureMatrix;
+  rawFeatureCount: number;
+  excludedSparseOrConstant: number;
+  excludedDuplicates: number;
+} {
   const priceCategories = new Set<FeatureCategory>([
     "Candle Structure",
     "Market Structure",
@@ -303,6 +331,7 @@ function buildDatasetFeatures(
   }
   features.push(...semantic.features);
   Object.assign(matrix, semantic.matrix);
+  const rawFeatureCount = features.length;
   const informative = features.filter((feature) => {
     const values = matrix[feature.id] ?? [];
     const distinct = new Set<string | number>();
@@ -322,10 +351,133 @@ function buildDatasetFeatures(
       distinct.size >= 2
     );
   });
+  const fingerprint = (values: FeatureMatrix[string]): string => {
+    const samples = 128;
+    const step = Math.max(1, Math.floor(values.length / samples));
+    const parts = [String(values.length)];
+    for (let index = 0; index < values.length; index += step) {
+      const value = values[index];
+      parts.push(
+        typeof value === "number"
+          ? Number.isFinite(value)
+            ? value.toPrecision(12)
+            : "missing"
+          : value == null
+            ? "missing"
+            : String(value),
+      );
+    }
+    return parts.join("|");
+  };
+  const sameSeries = (
+    left: FeatureMatrix[string],
+    right: FeatureMatrix[string],
+  ): boolean => {
+    if (left.length !== right.length) return false;
+    for (let index = 0; index < left.length; index++) {
+      const a = left[index];
+      const b = right[index];
+      const aMissing =
+        a == null || (typeof a === "number" && !Number.isFinite(a));
+      const bMissing =
+        b == null || (typeof b === "number" && !Number.isFinite(b));
+      if (aMissing || bMissing) {
+        if (aMissing !== bMissing) return false;
+      } else if (a !== b) {
+        return false;
+      }
+    }
+    return true;
+  };
+  const retainedByFingerprint = new Map<string, Feature>();
+  const deduplicated: Feature[] = [];
+  let excludedDuplicates = 0;
+  for (const feature of informative) {
+    const values = matrix[feature.id] ?? [];
+    const key = `${feature.type}:${fingerprint(values)}`;
+    const retained = retainedByFingerprint.get(key);
+    if (retained && sameSeries(matrix[retained.id] ?? [], values)) {
+      excludedDuplicates++;
+      continue;
+    }
+    retainedByFingerprint.set(key, feature);
+    deduplicated.push(feature);
+  }
   const informativeMatrix: FeatureMatrix = Object.fromEntries(
-    informative.map((feature) => [feature.id, matrix[feature.id]]),
+    deduplicated.map((feature) => [feature.id, matrix[feature.id]]),
   );
-  return { features: informative, matrix: informativeMatrix };
+  return {
+    features: deduplicated,
+    matrix: informativeMatrix,
+    rawFeatureCount,
+    excludedSparseOrConstant: rawFeatureCount - informative.length,
+    excludedDuplicates,
+  };
+}
+
+export function createAutomaticResearchPlan(
+  included: Dataset[],
+  featuresByDataset: Record<string, Feature[]>,
+  audits: Array<{
+    rawFeatureCount: number;
+    excludedSparseOrConstant: number;
+    excludedDuplicates: number;
+  }>,
+): AutomaticResearchPlan {
+  const enabledCategories = collectResearchCategories(
+    Object.values(featuresByDataset),
+    included.length > 1,
+  );
+  const totalBars = included.reduce(
+    (sum, candidate) => sum + candidate.rowCount,
+    0,
+  );
+  const usableFeatureCount = Object.values(featuresByDataset).reduce(
+    (sum, catalog) => sum + catalog.length,
+    0,
+  );
+  const smallestTimeline = Math.min(
+    ...included.map((candidate) => candidate.rowCount),
+  );
+  const minSampleSize = Math.max(
+    30,
+    Math.min(100, Math.floor(smallestTimeline * 0.01)),
+  );
+  const maxDepth = totalBars > 150_000 || usableFeatureCount > 300 ? 2 : 3;
+  return {
+    datasetCount: included.length,
+    totalBars,
+    rawFeatureCount: audits.reduce(
+      (sum, audit) => sum + audit.rawFeatureCount,
+      0,
+    ),
+    usableFeatureCount,
+    excludedSparseOrConstant: audits.reduce(
+      (sum, audit) => sum + audit.excludedSparseOrConstant,
+      0,
+    ),
+    excludedDuplicates: audits.reduce(
+      (sum, audit) => sum + audit.excludedDuplicates,
+      0,
+    ),
+    enabledCategories,
+    minSampleSize,
+    minWinRate: 55,
+    maxDepth,
+    maxCombinations: 50_000,
+    holdWindowAutoFind: true,
+    executionView: "non-overlapping",
+    rationale: [
+      "Every relationship supported by at least one selected upload is included.",
+      "Sparse, constant, unavailable, and exact duplicate measurements are removed before discovery.",
+      included.length > 1
+        ? "Every selected file remains an outcome target by default; other timelines are causally aligned as context during each pass."
+        : "The selected file supplies the outcome timeline.",
+      maxDepth === 2
+        ? "Complexity is capped at two conditions for this large research universe so the first pass covers more distinct relationships."
+        : "Up to three-condition confluence is enabled for a balanced first pass.",
+    ],
+  };
 }
 
 function timeframeMinutes(dataset: Dataset): number {
@@ -489,6 +641,8 @@ export const useEngineStore = create<EngineState>((set, get) => ({
   report: null,
   discoveryConfig: DEFAULT_CONFIG,
   discoveryProgress: DEFAULT_PROGRESS,
+  automaticResearchPlan: null,
+  researchPlanCustomized: false,
   activeTab: "features",
   completedSteps: new Set<CompletedStep>(),
   isComputing: false,
@@ -518,6 +672,8 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         researchFeatureValues: null,
         researchContextDatasetIds: [],
         researchTotalBars: 0,
+        automaticResearchPlan: null,
+        researchPlanCustomized: false,
         patterns: [],
         validationResults: [],
         crossReferenceResults: [],
@@ -574,6 +730,8 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         researchFeatureValues: null,
         researchContextDatasetIds: [],
         researchTotalBars: 0,
+        automaticResearchPlan: null,
+        researchPlanCustomized: false,
         patterns: [],
         validationResults: [],
         crossReferenceResults: [],
@@ -629,6 +787,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
       discoverySearchAudits: [],
       validationResults: [],
       report: null,
+      researchPlanCustomized: true,
       discoveryProgress: DEFAULT_PROGRESS,
     }));
   },
@@ -658,6 +817,8 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         crossReferenceResults: [],
         report: null,
         completedSteps,
+        automaticResearchPlan: null,
+        researchPlanCustomized: false,
       };
     }),
 
@@ -702,6 +863,11 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         if (included.length === 0) included.push(dataset);
         const featuresByDataset: Record<string, Feature[]> = {};
         const featureValuesByDataset: Record<string, FeatureMatrix> = {};
+        const featureAudits: Array<{
+          rawFeatureCount: number;
+          excludedSparseOrConstant: number;
+          excludedDuplicates: number;
+        }> = [];
         for (const candidate of included) {
           const generated = buildDatasetFeatures(
             candidate,
@@ -709,12 +875,14 @@ export const useEngineStore = create<EngineState>((set, get) => ({
           );
           featuresByDataset[candidate.id] = generated.features;
           featureValuesByDataset[candidate.id] = generated.matrix;
+          featureAudits.push(generated);
         }
         const features = featuresByDataset[dataset.id] ?? [];
         const featureValues = featureValuesByDataset[dataset.id] ?? null;
-        const availableCategories = collectResearchCategories(
-          Object.values(featuresByDataset),
-          included.length > 1,
+        const automaticResearchPlan = createAutomaticResearchPlan(
+          included,
+          featuresByDataset,
+          featureAudits,
         );
         const completed = new Set<CompletedStep>(get().completedSteps);
         completed.add("dataLoaded");
@@ -726,8 +894,22 @@ export const useEngineStore = create<EngineState>((set, get) => ({
           featureValuesByDataset,
           discoveryConfig: {
             ...get().discoveryConfig,
-            enabledCategories: availableCategories,
+            enabledCategories: automaticResearchPlan.enabledCategories,
+            minSampleSize: automaticResearchPlan.minSampleSize,
+            minWinRate: automaticResearchPlan.minWinRate,
+            maxDepth: automaticResearchPlan.maxDepth,
+            maxCombinations: automaticResearchPlan.maxCombinations,
+            holdWindowAutoFind: automaticResearchPlan.holdWindowAutoFind,
+            roundTripCostBps: Math.max(
+              5,
+              get().discoveryConfig.roundTripCostBps ?? 0,
+            ),
+            mfeMaeRatioMode: "off",
+            mfeMaeRatioEnabled: false,
+            executionView: automaticResearchPlan.executionView,
           },
+          automaticResearchPlan,
+          researchPlanCustomized: false,
           isComputing: false,
           completedSteps: completed,
           // Clear downstream results since features changed.
@@ -772,6 +954,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         patterns: [],
         validationResults: [],
         report: null,
+        researchPlanCustomized: true,
       };
     });
   },
@@ -795,6 +978,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         patterns: [],
         validationResults: [],
         report: null,
+        researchPlanCustomized: true,
       };
     });
   },
@@ -1188,6 +1372,42 @@ export const useEngineStore = create<EngineState>((set, get) => ({
   updateConfig: (patch) => {
     set({
       discoveryConfig: { ...get().discoveryConfig, ...patch },
+      researchPlanCustomized: true,
+    });
+  },
+
+  applyAutomaticResearchPlan: () => {
+    const plan = get().automaticResearchPlan;
+    if (!plan) return;
+    const current = get().discoveryConfig;
+    set({
+      discoveryConfig: {
+        ...current,
+        enabledCategories: [...plan.enabledCategories],
+        minSampleSize: plan.minSampleSize,
+        minWinRate: plan.minWinRate,
+        maxDepth: plan.maxDepth,
+        maxCombinations: plan.maxCombinations,
+        holdWindowAutoFind: plan.holdWindowAutoFind,
+        roundTripCostBps: Math.max(5, current.roundTripCostBps ?? 0),
+        mfeMaeRatioMode: "off",
+        mfeMaeRatioEnabled: false,
+        executionView: plan.executionView,
+      },
+      features: get().features.map((feature) => ({
+        ...feature,
+        enabled: true,
+      })),
+      featuresByDataset: Object.fromEntries(
+        Object.entries(get().featuresByDataset).map(([datasetId, catalog]) => [
+          datasetId,
+          catalog.map((feature) => ({ ...feature, enabled: true })),
+        ]),
+      ),
+      researchPlanCustomized: false,
+      patterns: [],
+      validationResults: [],
+      report: null,
     });
   },
 
@@ -1222,6 +1442,8 @@ export const useEngineStore = create<EngineState>((set, get) => ({
       report: null,
       discoveryConfig: DEFAULT_CONFIG,
       discoveryProgress: DEFAULT_PROGRESS,
+      automaticResearchPlan: null,
+      researchPlanCustomized: false,
       activeTab: "features",
       completedSteps: new Set<CompletedStep>(),
       isComputing: false,
@@ -1268,6 +1490,11 @@ export const useEngineStore = create<EngineState>((set, get) => ({
       if (included.length === 0 && activeDataset) included.push(activeDataset);
       const featuresByDataset: Record<string, Feature[]> = {};
       const featureValuesByDataset: Record<string, FeatureMatrix> = {};
+      const featureAudits: Array<{
+        rawFeatureCount: number;
+        excludedSparseOrConstant: number;
+        excludedDuplicates: number;
+      }> = [];
       for (const candidate of included) {
         const generated = buildDatasetFeatures(
           candidate,
@@ -1275,7 +1502,16 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         );
         featuresByDataset[candidate.id] = generated.features;
         featureValuesByDataset[candidate.id] = generated.matrix;
+        featureAudits.push(generated);
       }
+      const automaticResearchPlan =
+        included.length > 0
+          ? createAutomaticResearchPlan(
+              included,
+              featuresByDataset,
+              featureAudits,
+            )
+          : null;
       const completedSteps = new Set<CompletedStep>(checkpoint.completedSteps);
       if (checkpoint.patterns.length === 0) {
         completedSteps.clear();
@@ -1298,6 +1534,8 @@ export const useEngineStore = create<EngineState>((set, get) => ({
           : null,
         featuresByDataset,
         featureValuesByDataset,
+        automaticResearchPlan,
+        researchPlanCustomized: true,
         researchFeatures: [],
         researchFeatureValues: null,
         researchContextDatasetIds: [],

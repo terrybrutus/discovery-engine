@@ -32,6 +32,8 @@ try {
   } = await server.ssrLoadModule("/src/lib/researchCategories.ts");
   const { computeFeatureValues, generateFeatures } =
     await server.ssrLoadModule("/src/lib/features.ts");
+  const { buildDatasetFeatures, createAutomaticResearchPlan } =
+    await server.ssrLoadModule("/src/store/engineStore.ts");
 
   const makeCsv = (start, minutes, rows) => {
     const lines = ["time,open,high,low,close"];
@@ -61,6 +63,41 @@ try {
   if (hierarchy.instruments.length !== 1) {
     throw new Error(
       `Expected one instrument group; got ${hierarchy.instruments.length}`,
+    );
+  }
+
+  // Automatic-plan regression: identical and constant uploaded measurements
+  // must be removed without asking the user to choose research checkboxes.
+  const schemaLines = ["time,Signal A,Signal B,Constant"];
+  for (let index = 0; index < 240; index++) {
+    const time = new Date(
+      Date.parse("2026-01-05T09:30:00Z") + index * 60_000,
+    ).toISOString();
+    const signal = Math.sin(index / 7).toFixed(8);
+    schemaLines.push(`${time},${signal},${signal},1`);
+  }
+  const schemaParsed = parseCsv(
+    schemaLines.join("\n"),
+    "SCHEMA_AUTOMATION_1m.csv",
+  );
+  if (!schemaParsed.dataset) {
+    throw new Error(`Automatic-plan fixture failed: ${schemaParsed.error}`);
+  }
+  const schemaGenerated = buildDatasetFeatures(schemaParsed.dataset, {});
+  const schemaPlan = createAutomaticResearchPlan(
+    [schemaParsed.dataset],
+    { [schemaParsed.dataset.id]: schemaGenerated.features },
+    [schemaGenerated],
+  );
+  if (
+    schemaGenerated.excludedSparseOrConstant < 1 ||
+    schemaGenerated.excludedDuplicates < 1 ||
+    schemaPlan.enabledCategories.length === 0 ||
+    !schemaPlan.holdWindowAutoFind ||
+    schemaPlan.executionView !== "non-overlapping"
+  ) {
+    throw new Error(
+      "Automatic research selection did not remove dead/duplicate measurements and apply a complete first-pass plan.",
     );
   }
   const labels = hierarchy.instruments[0].timeframeLabels.join(" → ");
@@ -491,6 +528,10 @@ try {
     JSON.stringify(
       {
         hierarchy: labels,
+        automaticUsableRelationships: schemaPlan.usableFeatureCount,
+        automaticRemovedRelationships:
+          schemaPlan.excludedSparseOrConstant +
+          schemaPlan.excludedDuplicates,
         beforeCloseSourceIndex: beforeClose.sourceIndex,
         atCloseSourceIndex: atClose.sourceIndex,
         futureLeakCount: atClose.futureLeakCount,

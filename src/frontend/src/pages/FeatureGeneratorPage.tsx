@@ -39,6 +39,7 @@ export default function FeatureGeneratorPage() {
   const isComputing = useEngineStore((s) => s.isComputing);
   const lastError = useEngineStore((s) => s.lastError);
   const completedSteps = useEngineStore((s) => s.completedSteps);
+  const automaticResearchPlan = useEngineStore((s) => s.automaticResearchPlan);
   const generateFeaturesAction = useEngineStore(
     (s) => s.generateFeaturesAction,
   );
@@ -318,8 +319,21 @@ export default function FeatureGeneratorPage() {
               <span className="font-mono tabular-nums">
                 {displayFeatures.length}
               </span>{" "}
-              schema-supported capabilities enabled
+              usable capabilities enabled automatically
             </p>
+            {automaticResearchPlan ? (
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Removed{" "}
+                <span className="font-mono tabular-nums">
+                  {(
+                    automaticResearchPlan.excludedSparseOrConstant +
+                    automaticResearchPlan.excludedDuplicates
+                  ).toLocaleString()}
+                </span>{" "}
+                sparse, constant, unavailable, or exact-duplicate measurements
+                before discovery.
+              </p>
+            ) : null}
           </div>
         </div>
         <Button
@@ -348,12 +362,10 @@ export default function FeatureGeneratorPage() {
           </h3>
         </div>
         <p className="text-xs text-muted-foreground">
-          Browse every generated feature by category — this is the feature
-          glossary. Each card shows a plain-English definition, a source badge
-          (Built-in vs Custom for uploaded columns), and an expandable Formula
-          section with the exact computation. Toggle features on or off to
-          control which ones the discovery engine will test, filter by source,
-          or use search to find a specific feature by name.
+          This is a glossary of the relationships the engine selected
+          automatically. Each card shows its definition, source, and exact
+          formula. You do not need to toggle anything; the controls are optional
+          overrides for intentionally narrowing a later run.
         </p>
         <FeatureCatalog
           features={displayFeatures}

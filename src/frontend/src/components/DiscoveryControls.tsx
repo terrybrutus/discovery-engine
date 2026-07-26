@@ -117,6 +117,13 @@ export function DiscoveryControls({
   const datasets = useEngineStore((s) => s.datasets);
   const selectedDatasetIds = useEngineStore((s) => s.selectedDatasetIds);
   const activeDatasetId = useEngineStore((s) => s.activeDatasetId);
+  const automaticResearchPlan = useEngineStore((s) => s.automaticResearchPlan);
+  const researchPlanCustomized = useEngineStore(
+    (s) => s.researchPlanCustomized,
+  );
+  const applyAutomaticResearchPlan = useEngineStore(
+    (s) => s.applyAutomaticResearchPlan,
+  );
 
   // Categories exist only when the uploaded schema supports them.
   const categories = useEngineStore(selectFeatureCategories);
@@ -309,6 +316,89 @@ export function DiscoveryControls({
           Discovery Settings
         </h2>
       </div>
+
+      {automaticResearchPlan ? (
+        <section
+          className="rounded-lg border border-primary/35 bg-primary/10 p-3"
+          data-ocid="discovery_controls.automatic_plan"
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <Sparkles className="size-4 text-primary" aria-hidden="true" />
+                <h3 className="text-sm font-semibold">
+                  {researchPlanCustomized
+                    ? "Automatic plan has custom overrides"
+                    : "Automatic research plan active"}
+                </h3>
+              </div>
+              <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                The engine inspected every selected upload and enabled every
+                usable relationship. You do not need to choose the relationship
+                checkboxes below unless you want to narrow the search.
+              </p>
+            </div>
+            {researchPlanCustomized ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={disabled}
+                onClick={applyAutomaticResearchPlan}
+              >
+                <RotateCcw className="size-3.5" aria-hidden="true" />
+                Restore auto
+              </Button>
+            ) : null}
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-4">
+            <div className="rounded border border-border/70 bg-background/60 p-2">
+              <div className="font-mono text-sm text-foreground">
+                {automaticResearchPlan.usableFeatureCount.toLocaleString()}
+              </div>
+              <div className="text-muted-foreground">usable relationships</div>
+            </div>
+            <div className="rounded border border-border/70 bg-background/60 p-2">
+              <div className="font-mono text-sm text-foreground">
+                {automaticResearchPlan.enabledCategories.length}
+              </div>
+              <div className="text-muted-foreground">categories included</div>
+            </div>
+            <div className="rounded border border-border/70 bg-background/60 p-2">
+              <div className="font-mono text-sm text-foreground">
+                {(
+                  automaticResearchPlan.excludedSparseOrConstant +
+                  automaticResearchPlan.excludedDuplicates
+                ).toLocaleString()}
+              </div>
+              <div className="text-muted-foreground">
+                dead/duplicate removed
+              </div>
+            </div>
+            <div className="rounded border border-border/70 bg-background/60 p-2">
+              <div className="font-mono text-sm text-foreground">
+                depth {automaticResearchPlan.maxDepth}
+              </div>
+              <div className="text-muted-foreground">
+                {automaticResearchPlan.maxCombinations.toLocaleString()} tests
+              </div>
+            </div>
+          </div>
+          <details className="mt-3">
+            <summary className="cursor-pointer text-[11px] font-medium">
+              What the engine selected
+            </summary>
+            <div className="mt-2 space-y-2 text-[11px] leading-relaxed text-muted-foreground">
+              <p>{automaticResearchPlan.enabledCategories.join(", ")}</p>
+              <ul className="list-disc space-y-1 pl-4">
+                {automaticResearchPlan.rationale.map((reason) => (
+                  <li key={reason}>{reason}</li>
+                ))}
+              </ul>
+            </div>
+          </details>
+        </section>
+      ) : null}
 
       <DiscoveryAdvisor disabled={disabled} />
 
@@ -651,7 +741,7 @@ export function DiscoveryControls({
       <div className={cn("flex flex-col gap-3", disabled && "opacity-60")}>
         <div className="flex items-baseline justify-between">
           <span className="text-sm font-medium text-foreground">
-            Available relationships
+            Advanced relationship overrides
           </span>
           <span
             className="font-mono text-xs tabular-nums text-muted-foreground"
@@ -661,8 +751,9 @@ export function DiscoveryControls({
           </span>
         </div>
         <p className="text-xs text-muted-foreground">
-          Generated only from fields present in your uploads. The engine does
-          not assume VWAP, volume, price, or any other missing measurement.
+          The automatic plan already includes every usable relationship
+          generated from your uploads. These controls are optional and exist
+          only when you deliberately want to narrow the search.
         </p>
         <div className="flex flex-col gap-2">
           {categories.map((cat) => {
@@ -833,7 +924,9 @@ export function DiscoveryControls({
             onClick={() => (onRun ? onRun() : void runDiscoveryAction())}
           >
             <Play className="size-4 fill-current" aria-hidden="true" />
-            Run discovery
+            {automaticResearchPlan && !researchPlanCustomized
+              ? "Run recommended discovery"
+              : "Run discovery"}
             <ArrowRight className="size-4" aria-hidden="true" />
           </Button>
         )}
