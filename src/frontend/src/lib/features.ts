@@ -3,6 +3,7 @@ import type {
   Feature,
   FeatureCategory,
   FeatureMatrix,
+  MarketSessionConfig,
   OHLCVBar,
 } from "@/types";
 
@@ -19,46 +20,66 @@ import type {
 // dynamically with uploaded data.
 // ---------------------------------------------------------------------------
 
-const TIME_BUCKETS = [
-  "Outside RTH",
-  "9:30-10:00",
-  "10:00-10:30",
-  "10:30-11:00",
-  "11:00-11:30",
-  "11:30-12:00",
-  "12:00-12:30",
-  "12:30-13:00",
-  "13:00-13:30",
-  "13:30-14:00",
-  "14:00-14:30",
-  "14:30-15:00",
-  "15:00-15:30",
-  "15:30-16:00",
-];
+export const DEFAULT_MARKET_SESSION_CONFIG: MarketSessionConfig = {
+  timeZone: "America/New_York",
+  regularOpenMinutes: 9 * 60 + 30,
+  regularCloseMinutes: 16 * 60,
+  openingRangeMinutes: 30,
+  tradingDayStartMinutes: 18 * 60,
+};
 
-// Session conventions for the index-CFD/futures research profile. Use an
-// explicit timezone so results do not change with the browser's location.
-const SESSION_OPEN_HOUR = 9;
-const SESSION_OPEN_MIN = 30;
-const RTH_CLOSE_HOUR = 16;
-const RESEARCH_TIME_ZONE = "America/New_York";
-const TRADING_DAY_START_HOUR = 18;
-const TRADING_DAY_SHIFT_MS = (24 - TRADING_DAY_START_HOUR) * 60 * 60 * 1000;
-const NEW_YORK_PARTS = new Intl.DateTimeFormat("en-US", {
-  timeZone: RESEARCH_TIME_ZONE,
-  hourCycle: "h23",
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-});
-const NEW_YORK_DATE = new Intl.DateTimeFormat("en-CA", {
-  timeZone: RESEARCH_TIME_ZONE,
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-});
+const formatterCache = new Map<
+  string,
+  { parts: Intl.DateTimeFormat; date: Intl.DateTimeFormat }
+>();
+
+function sessionFormatters(timeZone: string): {
+  parts: Intl.DateTimeFormat;
+  date: Intl.DateTimeFormat;
+} {
+  const cached = formatterCache.get(timeZone);
+  if (cached) return cached;
+  const formatters = {
+    parts: new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    }),
+    date: new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }),
+  };
+  formatterCache.set(timeZone, formatters);
+  return formatters;
+}
+
+function formatMinutes(minutes: number): string {
+  const normalized = ((minutes % 1440) + 1440) % 1440;
+  const hour = Math.floor(normalized / 60);
+  const minute = normalized % 60;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function timeBuckets(session: MarketSessionConfig): string[] {
+  const buckets = ["Outside RTH"];
+  for (
+    let start = session.regularOpenMinutes;
+    start < session.regularCloseMinutes;
+    start += 30
+  ) {
+    buckets.push(
+      `${Math.floor(start / 60)}:${String(start % 60).padStart(2, "0")}-${Math.floor(Math.min(start + 30, session.regularCloseMinutes) / 60)}:${String(Math.min(start + 30, session.regularCloseMinutes) % 60).padStart(2, "0")}`,
+    );
+  }
+  return buckets;
+}
 
 const SESSION_PHASE_BUCKETS = [
   "Overnight",
@@ -195,6 +216,7 @@ export function generateFeatures(
   _bars: OHLCVBar[],
   customColumns: CustomColumn[] = [],
   overrides: FeatureOverrides = {},
+  session: MarketSessionConfig = DEFAULT_MARKET_SESSION_CONFIG,
 ): Feature[] {
   const features: Feature[] = [
     // ---- Candle Structure ----
@@ -325,8 +347,8 @@ export function generateFeatures(
       "Time",
       "Which 30-minute window of the trading session the bar falls in.",
       "categorical",
-      "Time of Day = 30-minute bucket of the bar timestamp measured from the 9:30 session open (e.g. '9:30-10:00')",
-      { buckets: TIME_BUCKETS },
+      `Time of Day = 30-minute bucket in ${session.timeZone}, measured from the configured ${formatMinutes(session.regularOpenMinutes)} regular-session open`,
+      { buckets: timeBuckets(session) },
     ),
     f(
       "session_phase",
@@ -574,16 +596,16 @@ export function generateFeatures(
       "or_size_pct",
       "Opening Range Size %",
       "Opening Range",
-      "Size of the 09:30-10:00 New York opening range as a percent of price.",
+      `Size of the first ${session.openingRangeMinutes} minutes after the configured regular-session open, as a percent of price.`,
       "numeric",
-      "Opening Range Size % = (OR_high - OR_low) / close * 100, where OR uses 09:30-10:00 America/New_York",
+      `Opening Range Size % = (OR_high - OR_low) / close * 100, where OR uses ${formatMinutes(session.regularOpenMinutes)}-${formatMinutes(session.regularOpenMinutes + session.openingRangeMinutes)} ${session.timeZone}`,
       { range: [0, 5] },
     ),
     f(
       "or_breakout",
       "Opening Range Breakout",
       "Opening Range",
-      "Whether price has broken the completed 09:30-10:00 New York opening range, and in which direction.",
+      "Whether price has broken the completed configured opening range, and in which direction.",
       "categorical",
       "Opening Range Breakout = 'Up' if high > OR_high, 'Down' if low < OR_low, 'Both' if both, else 'None'",
       { buckets: OR_BREAKOUT_BUCKETS },
@@ -768,11 +790,16 @@ function bucketize(value: number, edges: number[], labels: string[]): string {
   return labels[labels.length - 1];
 }
 
-function newYorkParts(ts: number): {
+function sessionParts(
+  ts: number,
+  session: MarketSessionConfig,
+): {
   hour: number;
   minute: number;
 } {
-  const parts = NEW_YORK_PARTS.formatToParts(new Date(ts));
+  const parts = sessionFormatters(session.timeZone).parts.formatToParts(
+    new Date(ts),
+  );
   const values = new Map(parts.map((part) => [part.type, part.value]));
   return {
     hour: Number(values.get("hour") ?? 0),
@@ -780,47 +807,55 @@ function newYorkParts(ts: number): {
   };
 }
 
-function tradingDayKey(ts: number): string {
-  // A six-hour wall-clock shift maps the 18:00→17:59 New York session to
-  // one calendar label while retaining DST-aware date formatting.
-  return NEW_YORK_DATE.format(new Date(ts + TRADING_DAY_SHIFT_MS));
+function tradingDayKey(ts: number, session: MarketSessionConfig): string {
+  const shiftMs = (24 * 60 - session.tradingDayStartMinutes) * 60 * 1000;
+  return sessionFormatters(session.timeZone).date.format(
+    new Date(ts + shiftMs),
+  );
 }
 
-function timeOfDayBucket(ts: number): string {
-  const parts = newYorkParts(ts);
-  const minutes = parts.hour * 60 + parts.minute;
-  const sessionStart = SESSION_OPEN_HOUR * 60 + SESSION_OPEN_MIN; // 570
-  const sessionEnd = RTH_CLOSE_HOUR * 60;
-  if (minutes < sessionStart || minutes >= sessionEnd) return "Outside RTH";
-  const offset = minutes - sessionStart;
-  const idx = Math.min(TIME_BUCKETS.length - 2, Math.floor(offset / 30));
-  return TIME_BUCKETS[idx + 1];
-}
-
-function sessionPhaseBucket(ts: number): string {
-  const parts = newYorkParts(ts);
+function timeOfDayBucket(ts: number, session: MarketSessionConfig): string {
+  const parts = sessionParts(ts, session);
   const minutes = parts.hour * 60 + parts.minute;
   if (
-    minutes < SESSION_OPEN_HOUR * 60 + SESSION_OPEN_MIN ||
-    minutes >= RTH_CLOSE_HOUR * 60
+    minutes < session.regularOpenMinutes ||
+    minutes >= session.regularCloseMinutes
+  ) {
+    return "Outside RTH";
+  }
+  const start =
+    session.regularOpenMinutes +
+    Math.floor((minutes - session.regularOpenMinutes) / 30) * 30;
+  const end = Math.min(start + 30, session.regularCloseMinutes);
+  return `${Math.floor(start / 60)}:${String(start % 60).padStart(2, "0")}-${Math.floor(end / 60)}:${String(end % 60).padStart(2, "0")}`;
+}
+
+function sessionPhaseBucket(ts: number, session: MarketSessionConfig): string {
+  const parts = sessionParts(ts, session);
+  const minutes = parts.hour * 60 + parts.minute;
+  if (
+    minutes < session.regularOpenMinutes ||
+    minutes >= session.regularCloseMinutes
   ) {
     return "Overnight";
   }
-  if (minutes < 10 * 60) return "Open";
-  if (minutes < 11 * 60 + 30) return "Morning";
-  if (minutes < 13 * 60) return "Lunch";
-  if (minutes < 15 * 60) return "Afternoon";
+  const offset = minutes - session.regularOpenMinutes;
+  const remaining = session.regularCloseMinutes - minutes;
+  if (offset < 30) return "Open";
+  if (offset < 120) return "Morning";
+  if (offset < 210) return "Lunch";
+  if (remaining > 60) return "Afternoon";
   return "Close";
 }
 
-function weekdayBucket(ts: number): string {
-  const d = new Date(`${tradingDayKey(ts)}T12:00:00Z`).getUTCDay(); // 0=Sun
+function weekdayBucket(ts: number, session: MarketSessionConfig): string {
+  const d = new Date(`${tradingDayKey(ts, session)}T12:00:00Z`).getUTCDay(); // 0=Sun
   return WEEKDAY_BUCKETS[Math.max(0, d - 1)] ?? "Mon";
 }
 
-function monthBucket(ts: number): string {
+function monthBucket(ts: number, session: MarketSessionConfig): string {
   return MONTH_BUCKETS[
-    new Date(`${tradingDayKey(ts)}T12:00:00Z`).getUTCMonth()
+    new Date(`${tradingDayKey(ts, session)}T12:00:00Z`).getUTCMonth()
   ];
 }
 
@@ -839,12 +874,13 @@ export function computeFeatureValues(
   bars: OHLCVBar[],
   features: Feature[],
   customColumnValues: Record<string, number[]> = {},
+  session: MarketSessionConfig = DEFAULT_MARKET_SESSION_CONFIG,
 ): FeatureMatrix {
   const matrix: FeatureMatrix = {};
   for (const feat of features) matrix[feat.id] = new Array(bars.length);
 
   // Pre-compute per-day aggregates for prev-day location & gap.
-  const dayIndex = buildDayIndex(bars);
+  const dayIndex = buildDayIndex(bars, session);
   const dayCloseByBar = new Array<number | null>(bars.length).fill(null);
   const dayHighByBar = new Array<number | null>(bars.length).fill(null);
   const dayLowByBar = new Array<number | null>(bars.length).fill(null);
@@ -863,8 +899,7 @@ export function computeFeatureValues(
   // Rolling closes for SMA/stdev (Bollinger, trend).
   const closes = bars.map((b) => b.close);
 
-  // New York RTH opening range (09:30-10:00), measured by wall-clock time
-  // rather than by "the first N bars" or the start of a UTC calendar day.
+  // Configured opening range, measured in the selected market timezone.
   const orHighByBar = new Array<number | null>(bars.length).fill(null);
   const orLowByBar = new Array<number | null>(bars.length).fill(null);
   const orSizeByBar = new Array<number | null>(bars.length).fill(null);
@@ -872,11 +907,16 @@ export function computeFeatureValues(
     const openingBars: number[] = [];
     let firstAfterOpeningRange = -1;
     for (let i = day.start; i <= day.end; i++) {
-      const parts = newYorkParts(bars[i].timestamp);
+      const parts = sessionParts(bars[i].timestamp, session);
       const minutes = parts.hour * 60 + parts.minute;
-      if (minutes >= 9 * 60 + 30 && minutes < 10 * 60) {
+      const openingRangeEnd =
+        session.regularOpenMinutes + session.openingRangeMinutes;
+      if (minutes >= session.regularOpenMinutes && minutes < openingRangeEnd) {
         openingBars.push(i);
-      } else if (minutes >= 10 * 60 && minutes < RTH_CLOSE_HOUR * 60) {
+      } else if (
+        minutes >= openingRangeEnd &&
+        minutes < session.regularCloseMinutes
+      ) {
         if (firstAfterOpeningRange < 0) firstAfterOpeningRange = i;
       }
     }
@@ -888,9 +928,9 @@ export function computeFeatureValues(
       lo = Math.min(lo, bars[i].low);
     }
     for (let i = firstAfterOpeningRange; i <= day.end; i++) {
-      const parts = newYorkParts(bars[i].timestamp);
+      const parts = sessionParts(bars[i].timestamp, session);
       const minutes = parts.hour * 60 + parts.minute;
-      if (minutes >= RTH_CLOSE_HOUR * 60) break;
+      if (minutes >= session.regularCloseMinutes) break;
       orHighByBar[i] = hi;
       orLowByBar[i] = lo;
       orSizeByBar[i] = hi - lo;
@@ -945,6 +985,18 @@ export function computeFeatureValues(
           : "Original Box";
     }
   }
+  // Execution-only level series. They intentionally have no Feature metadata,
+  // so discovery cannot threshold-search raw price levels. The candidate
+  // simulator can still execute a discovered box event at its exact causal
+  // boundary or midpoint.
+  matrix.__adjusted_pds_high = adjustedPdsHigh.map(
+    (value) => value ?? undefined,
+  );
+  matrix.__adjusted_pds_low = adjustedPdsLow.map((value) => value ?? undefined);
+  matrix.__adjusted_pds_mid = adjustedPdsHigh.map((high, index) => {
+    const low = adjustedPdsLow[index];
+    return high != null && low != null ? (high + low) / 2 : undefined;
+  });
 
   // VWAP per day (cumulative within session).
   const vwapByBar = new Array<number | null>(bars.length).fill(null);
@@ -1077,12 +1129,12 @@ export function computeFeatureValues(
     }
 
     // ---- Time ----
-    matrix.time_of_day[i] = timeOfDayBucket(bar.timestamp);
-    matrix.session_phase[i] = sessionPhaseBucket(bar.timestamp);
+    matrix.time_of_day[i] = timeOfDayBucket(bar.timestamp, session);
+    matrix.session_phase[i] = sessionPhaseBucket(bar.timestamp, session);
 
     // ---- Calendar ----
-    matrix.weekday[i] = weekdayBucket(bar.timestamp);
-    matrix.month[i] = monthBucket(bar.timestamp);
+    matrix.weekday[i] = weekdayBucket(bar.timestamp, session);
+    matrix.month[i] = monthBucket(bar.timestamp, session);
 
     // ---- Volume ----
     if (i >= 20) {
@@ -1450,7 +1502,10 @@ interface DayBucket {
   dayIdx: number;
 }
 
-function buildDayIndex(bars: OHLCVBar[]): DayBucket[] {
+function buildDayIndex(
+  bars: OHLCVBar[],
+  session: MarketSessionConfig,
+): DayBucket[] {
   const days: DayBucket[] = [];
   let cur: DayBucket | null = null;
   let lastDay = "";
@@ -1459,7 +1514,7 @@ function buildDayIndex(bars: OHLCVBar[]): DayBucket[] {
     // day from 18:00 New York through 17:59 the following day so previous-day
     // levels, gaps, VWAP, and session boxes use the actual trading session
     // rather than an arbitrary UTC-calendar boundary.
-    const d = tradingDayKey(bars[i].timestamp);
+    const d = tradingDayKey(bars[i].timestamp, session);
     if (d !== lastDay) {
       if (cur) {
         cur.end = i - 1;

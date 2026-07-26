@@ -576,6 +576,19 @@ export interface DiscoveryConfig {
   minConfluenceSources?: number;
 }
 
+export interface MarketSessionConfig {
+  /** IANA timezone used to interpret uploaded timestamps. */
+  timeZone: string;
+  /** Minutes after midnight at which the regular session opens. */
+  regularOpenMinutes: number;
+  /** Minutes after midnight at which the regular session closes. */
+  regularCloseMinutes: number;
+  /** Number of minutes after the regular open included in the opening range. */
+  openingRangeMinutes: number;
+  /** Minutes after midnight at which a new trading-day/session box begins. */
+  tradingDayStartMinutes: number;
+}
+
 export interface DiscoveryProgress {
   total: number;
   tested: number;

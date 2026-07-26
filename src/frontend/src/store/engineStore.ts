@@ -2,6 +2,7 @@ import type { Backend } from "@/backend";
 import { runCrossReference } from "@/lib/crossReference";
 import { runDiscovery } from "@/lib/discovery";
 import {
+  DEFAULT_MARKET_SESSION_CONFIG,
   type FeatureOverride,
   type FeatureOverrides,
   computeFeatureValues,
@@ -42,6 +43,7 @@ import type {
   Feature,
   FeatureCategory,
   FeatureMatrix,
+  MarketSessionConfig,
   Pattern,
   Report,
   SavedRun,
@@ -91,6 +93,8 @@ const DEFAULT_PROGRESS: DiscoveryProgress = {
   estimatedRemainingMs: 0,
 };
 
+const SAVED_RUN_ARCHIVE_PREFIX = "DISCOVERY_ENGINE_RUN_V2:";
+
 export interface AutomaticResearchPlan {
   datasetCount: number;
   totalBars: number;
@@ -106,6 +110,63 @@ export interface AutomaticResearchPlan {
   holdWindowAutoFind: boolean;
   executionView: "non-overlapping";
   rationale: string[];
+}
+
+interface SavedRunArchiveV2 {
+  version: 2;
+  activeDatasetId: string | null;
+  targetMode: "all" | "single";
+  selectedDatasetIds: string[];
+  datasets: Array<Omit<Dataset, "bars">>;
+  discoveryConfig: DiscoveryConfig;
+  featureOverrides: FeatureOverrides;
+  featuresByDataset: Record<string, Feature[]>;
+  researchFeatures: Feature[];
+  researchContextDatasetIds: string[];
+  researchTotalBars: number;
+  patterns: Pattern[];
+  discoverySearchAudits: DiscoverySearchAudit[];
+  validationResults: ValidationResult[];
+  report: Report | null;
+  automaticResearchPlan: AutomaticResearchPlan | null;
+  researchPlanCustomized: boolean;
+  marketSessionConfig: MarketSessionConfig;
+}
+
+function encodeSavedRunArchive(state: EngineState): string {
+  const archive: SavedRunArchiveV2 = {
+    version: 2,
+    activeDatasetId: state.activeDatasetId,
+    targetMode: state.targetMode,
+    selectedDatasetIds: state.selectedDatasetIds,
+    datasets: state.datasets.map(({ bars: _bars, ...metadata }) => metadata),
+    discoveryConfig: state.discoveryConfig,
+    featureOverrides: state.featureOverrides,
+    featuresByDataset: state.featuresByDataset,
+    researchFeatures: state.researchFeatures,
+    researchContextDatasetIds: state.researchContextDatasetIds,
+    researchTotalBars: state.researchTotalBars,
+    patterns: state.patterns,
+    discoverySearchAudits: state.discoverySearchAudits,
+    validationResults: state.validationResults,
+    report: state.report,
+    automaticResearchPlan: state.automaticResearchPlan,
+    researchPlanCustomized: state.researchPlanCustomized,
+    marketSessionConfig: state.marketSessionConfig,
+  };
+  return `${SAVED_RUN_ARCHIVE_PREFIX}${JSON.stringify(archive)}`;
+}
+
+function decodeSavedRunArchive(summary: string): SavedRunArchiveV2 | null {
+  if (!summary.startsWith(SAVED_RUN_ARCHIVE_PREFIX)) return null;
+  try {
+    const parsed = JSON.parse(
+      summary.slice(SAVED_RUN_ARCHIVE_PREFIX.length),
+    ) as SavedRunArchiveV2;
+    return parsed.version === 2 ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 interface EngineState {
@@ -148,6 +209,7 @@ interface EngineState {
   automaticResearchPlan: AutomaticResearchPlan | null;
   /** True after the user or Gemini changes the automatically applied plan. */
   researchPlanCustomized: boolean;
+  marketSessionConfig: MarketSessionConfig;
   activeTab: TabId;
   completedSteps: CompletedSteps;
   isComputing: boolean;
@@ -203,6 +265,7 @@ interface EngineState {
   setActiveTab: (tab: TabId) => void;
   updateConfig: (patch: Partial<DiscoveryConfig>) => void;
   applyAutomaticResearchPlan: () => void;
+  updateMarketSessionConfig: (patch: Partial<MarketSessionConfig>) => void;
   cancelDiscovery: () => void;
   resetSession: () => void;
   restoreRecoveryAction: () => Promise<void>;
@@ -285,6 +348,7 @@ function prefixSeries(
 export function buildDatasetFeatures(
   dataset: Dataset,
   overrides: FeatureOverrides,
+  session: MarketSessionConfig = DEFAULT_MARKET_SESSION_CONFIG,
 ): {
   features: Feature[];
   matrix: FeatureMatrix;
@@ -305,7 +369,7 @@ export function buildDatasetFeatures(
     "Trend",
   ]);
   const volumeCategories = new Set<FeatureCategory>(["VWAP", "Volume"]);
-  const allGenerated = generateFeatures(dataset.bars, [], overrides);
+  const allGenerated = generateFeatures(dataset.bars, [], overrides, session);
   const generated = dataset.hasOHLC
     ? allGenerated.filter(
         (feature) =>
@@ -319,7 +383,7 @@ export function buildDatasetFeatures(
   // uploads skip it entirely and receive only semantic transformations of the
   // fields actually present.
   const computed = dataset.hasOHLC
-    ? computeFeatureValues(dataset.bars, allGenerated)
+    ? computeFeatureValues(dataset.bars, allGenerated, {}, session)
     : {};
   const features = [...generated];
   const matrix: FeatureMatrix = Object.fromEntries(
@@ -643,6 +707,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
   discoveryProgress: DEFAULT_PROGRESS,
   automaticResearchPlan: null,
   researchPlanCustomized: false,
+  marketSessionConfig: DEFAULT_MARKET_SESSION_CONFIG,
   activeTab: "features",
   completedSteps: new Set<CompletedStep>(),
   isComputing: false,
@@ -872,6 +937,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
           const generated = buildDatasetFeatures(
             candidate,
             get().featureOverrides,
+            get().marketSessionConfig,
           );
           featuresByDataset[candidate.id] = generated.features;
           featureValuesByDataset[candidate.id] = generated.matrix;
@@ -1444,6 +1510,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
       discoveryProgress: DEFAULT_PROGRESS,
       automaticResearchPlan: null,
       researchPlanCustomized: false,
+      marketSessionConfig: DEFAULT_MARKET_SESSION_CONFIG,
       activeTab: "features",
       completedSteps: new Set<CompletedStep>(),
       isComputing: false,
@@ -1495,10 +1562,13 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         excludedSparseOrConstant: number;
         excludedDuplicates: number;
       }> = [];
+      const marketSessionConfig =
+        checkpoint.marketSessionConfig ?? DEFAULT_MARKET_SESSION_CONFIG;
       for (const candidate of included) {
         const generated = buildDatasetFeatures(
           candidate,
           checkpoint.featureOverrides as FeatureOverrides,
+          marketSessionConfig,
         );
         featuresByDataset[candidate.id] = generated.features;
         featureValuesByDataset[candidate.id] = generated.matrix;
@@ -1525,6 +1595,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         selectedDatasetIds,
         targetMode: checkpoint.targetMode,
         discoveryConfig: checkpoint.discoveryConfig,
+        marketSessionConfig,
         featureOverrides: checkpoint.featureOverrides as FeatureOverrides,
         features: activeDataset
           ? (featuresByDataset[activeDataset.id] ?? [])
@@ -1579,6 +1650,22 @@ export const useEngineStore = create<EngineState>((set, get) => ({
 
   clearAllOverrides: () => set({ featureOverrides: {} }),
 
+  updateMarketSessionConfig: (patch) => {
+    set((state) => ({
+      marketSessionConfig: {
+        ...state.marketSessionConfig,
+        ...patch,
+      },
+      patterns: [],
+      validationResults: [],
+      report: null,
+      completedSteps: new Set<CompletedStep>(
+        state.datasets.length > 0 ? ["dataLoaded"] : [],
+      ),
+    }));
+    if (get().datasets.length > 0) get().generateFeaturesAction();
+  },
+
   // ---- Saved runs actions ----
   saveRunAction: async (actor, name) => {
     if (!actor) {
@@ -1592,7 +1679,6 @@ export const useEngineStore = create<EngineState>((set, get) => ({
       const datasets = state.datasets || [];
       const patterns = state.patterns || [];
       const validationResults = state.validationResults || [];
-      const report = state.report;
       const serializedConfig = {
         minMfeMaeRatio: config.minMfeMaeRatio,
         horizon: BigInt(config.horizon),
@@ -1629,7 +1715,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
               byMarketCondition: [],
             };
       const serializedReport = {
-        summary: report?.summary ?? "",
+        summary: encodeSavedRunArchive(state),
         generatedAtNs: BigInt(Date.now() * 1_000_000),
       };
       const savedRun = {
@@ -1687,6 +1773,70 @@ export const useEngineStore = create<EngineState>((set, get) => ({
       const result = await actor.getMyRun(BigInt(runId));
       if (!result) {
         set({ savedRunsError: "Run not found." });
+        return;
+      }
+      const archive = decodeSavedRunArchive(result.report?.summary ?? "");
+      if (archive) {
+        const restoredDatasets: Dataset[] = archive.datasets.map(
+          (metadata) => ({
+            ...metadata,
+            bars: [],
+          }),
+        );
+        const activeDataset =
+          restoredDatasets.find(
+            (candidate) => candidate.id === archive.activeDatasetId,
+          ) ??
+          restoredDatasets[0] ??
+          null;
+        const features = activeDataset
+          ? (archive.featuresByDataset[activeDataset.id] ?? [])
+          : [];
+        const completed = new Set<CompletedStep>(["dataLoaded"]);
+        if (Object.keys(archive.featuresByDataset).length > 0) {
+          completed.add("featuresGenerated");
+        }
+        if (archive.patterns.length > 0) completed.add("discoveryComplete");
+        if (archive.validationResults.length > 0) {
+          completed.add("validationComplete");
+        }
+        if (archive.report) completed.add("reportReady");
+        set({
+          discoveryConfig: {
+            ...DEFAULT_CONFIG,
+            ...archive.discoveryConfig,
+          },
+          datasets: restoredDatasets,
+          activeDatasetId: activeDataset?.id ?? null,
+          selectedDatasetIds: archive.selectedDatasetIds.filter((id) =>
+            restoredDatasets.some((dataset) => dataset.id === id),
+          ),
+          targetMode: archive.targetMode,
+          dataset: activeDataset,
+          features,
+          featureValues: null,
+          featuresByDataset: archive.featuresByDataset,
+          featureValuesByDataset: {},
+          researchFeatures: archive.researchFeatures,
+          researchFeatureValues: null,
+          researchContextDatasetIds: archive.researchContextDatasetIds,
+          discoverySearchAudits: archive.discoverySearchAudits,
+          researchTotalBars: archive.researchTotalBars,
+          patterns: archive.patterns,
+          validationResults: archive.validationResults,
+          report: archive.report,
+          automaticResearchPlan: archive.automaticResearchPlan,
+          researchPlanCustomized: archive.researchPlanCustomized,
+          marketSessionConfig:
+            archive.marketSessionConfig ?? DEFAULT_MARKET_SESSION_CONFIG,
+          featureOverrides: archive.featureOverrides,
+          crossReferenceResults: [],
+          discoveryProgress: DEFAULT_PROGRESS,
+          completedSteps: completed,
+          activeTab: "discovery",
+          lastError: null,
+          savedRunsError: null,
+        });
         return;
       }
 
@@ -1870,6 +2020,7 @@ const flushRecoveryCheckpoint = () => {
     selectedDatasetIds: latest.selectedDatasetIds,
     targetMode: latest.targetMode,
     discoveryConfig: latest.discoveryConfig,
+    marketSessionConfig: latest.marketSessionConfig,
     featureOverrides: latest.featureOverrides,
     patterns: latest.patterns,
     validationResults: latest.validationResults,
@@ -1889,6 +2040,7 @@ useEngineStore.subscribe((state, previous) => {
     state.selectedDatasetIds !== previous.selectedDatasetIds ||
     state.targetMode !== previous.targetMode ||
     state.discoveryConfig !== previous.discoveryConfig ||
+    state.marketSessionConfig !== previous.marketSessionConfig ||
     state.featureOverrides !== previous.featureOverrides ||
     state.patterns !== previous.patterns ||
     state.validationResults !== previous.validationResults ||

@@ -37,6 +37,9 @@ try {
   } = await server.ssrLoadModule("/src/lib/researchCategories.ts");
   const { computeFeatureValues, generateFeatures } =
     await server.ssrLoadModule("/src/lib/features.ts");
+  const { simulateCandidateSystem } = await server.ssrLoadModule(
+    "/src/lib/candidateSimulation.ts",
+  );
   const { buildDatasetFeatures, createAutomaticResearchPlan } =
     await server.ssrLoadModule("/src/store/engineStore.ts");
 
@@ -51,6 +54,76 @@ try {
     }
     return lines.join("\n");
   };
+
+  // Candidate-system replay regression: clustered statistical matches must
+  // become one executable trade when non-overlap is enabled, with deterministic
+  // risk sizing and next-open timing.
+  const simulationBars = [
+    { timestamp: 0, open: 100, high: 100.5, low: 99.5, close: 100, volume: 1 },
+    {
+      timestamp: 60_000,
+      open: 100,
+      high: 101.2,
+      low: 99.5,
+      close: 101,
+      volume: 1,
+    },
+    {
+      timestamp: 120_000,
+      open: 101,
+      high: 101.5,
+      low: 100.5,
+      close: 101.2,
+      volume: 1,
+    },
+  ];
+  const simulation = simulateCandidateSystem({
+    pattern: {
+      id: "simulation-regression",
+      conditions: [
+        { featureId: "event", operator: "eq", bucketLabel: "Yes" },
+      ],
+      label: "Synthetic event",
+      direction: "bullish",
+      winRate: 100,
+      avgMove: 1,
+      avgMAE: 0.5,
+      avgMFE: 1.2,
+      sampleSize: 2,
+      confidence: "low",
+      score: 1,
+      horizon: 2,
+    },
+    bars: simulationBars,
+    matrix: { event: ["Yes", "Yes", "No"] },
+    config: {
+      entryMode: "next-open",
+      entryExpiryBars: 1,
+      stopPct: 1,
+      targetMode: "risk-multiple",
+      targetPct: 1,
+      rewardRiskMultiple: 1,
+      maxHoldBars: 2,
+      roundTripCostBps: 0,
+      startingCapital: 50_000,
+      riskPerTradePct: 1,
+      nonOverlapping: true,
+    },
+    session: {
+      timeZone: "America/New_York",
+      regularOpenMinutes: 570,
+      regularCloseMinutes: 960,
+      openingRangeMinutes: 30,
+      tradingDayStartMinutes: 1080,
+    },
+  });
+  if (
+    simulation.trades.length !== 1 ||
+    simulation.skippedOverlapping !== 1 ||
+    Math.abs(simulation.netProfit - 500) > 1e-9
+  ) {
+    throw new Error("Candidate-system execution regression failed.");
+  }
   const parse = (name, minutes, rows = 10) => {
     const result = parseCsv(
       makeCsv("2026-01-05T09:30:00Z", minutes, rows),
@@ -692,6 +765,8 @@ try {
         losingLongHoldNetPct: twentyOne.avgNetMove,
         directHypothesisPatterns: directPatterns.length,
         walkForwardReliabilityGate: "3/4 folds",
+        simulatedTrades: simulation.trades.length,
+        simulatedNetProfit: simulation.netProfit,
       },
       null,
       2,

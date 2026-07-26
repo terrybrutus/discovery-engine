@@ -6,6 +6,10 @@ import {
   formatPatternTarget,
 } from "@/lib/patternPresentation";
 import {
+  downloadReportMarkdown,
+  downloadResearchBundle,
+} from "@/lib/reportExport";
+import {
   patternSymbolEntries,
   summarizeSymbolAttribution,
 } from "@/lib/symbolAttribution";
@@ -15,6 +19,8 @@ import { useEngineStore } from "@/store/engineStore";
 import type { Pattern, TabId, ValidationResult } from "@/types";
 import {
   ArrowRight,
+  Braces,
+  Download,
   FileBarChart,
   RefreshCw,
   TrendingDown,
@@ -181,14 +187,46 @@ export default function ReportPage() {
           Report generated from this session&apos;s discovery and validation
           results. Adjust settings and regenerate to update.
         </p>
-        <Button
-          data-ocid="report.regenerate_button"
-          onClick={handleRegenerate}
-          disabled={!dataset || features.length === 0}
-        >
-          <RefreshCw className="size-4" aria-hidden="true" />
-          Regenerate Report
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() =>
+              downloadReportMarkdown(
+                activeReport,
+                patterns,
+                validationResults,
+                datasets,
+              )
+            }
+          >
+            <Download className="size-4" aria-hidden="true" />
+            Export Markdown
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() =>
+              downloadResearchBundle(
+                activeReport,
+                patterns,
+                validationResults,
+                datasets,
+              )
+            }
+          >
+            <Braces className="size-4" aria-hidden="true" />
+            Export Research JSON
+          </Button>
+          <Button
+            data-ocid="report.regenerate_button"
+            onClick={handleRegenerate}
+            disabled={!dataset || features.length === 0}
+          >
+            <RefreshCw className="size-4" aria-hidden="true" />
+            Regenerate Report
+          </Button>
+        </div>
       </div>
 
       {/* ---- Shareable summary block ---- */}

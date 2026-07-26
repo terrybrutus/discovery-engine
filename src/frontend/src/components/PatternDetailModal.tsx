@@ -34,6 +34,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { CandidateSystemSimulator } from "./CandidateSystemSimulator";
 import { PatternCoveragePanel } from "./PatternCoveragePanel";
 
 interface PatternDetailModalProps {
@@ -512,6 +513,10 @@ export function PatternDetailModal({
             <Separator />
           </>
         ) : null}
+
+        <CandidateSystemSimulator pattern={pattern} />
+
+        <Separator />
 
         {/* ---- Metric breakdown ---- */}
         <div className="flex flex-col gap-2">

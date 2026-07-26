@@ -4,6 +4,7 @@ import type {
   Dataset,
   DiscoveryConfig,
   DiscoverySearchAudit,
+  MarketSessionConfig,
   Pattern,
   Report,
   TabId,
@@ -23,6 +24,7 @@ export interface WorkspaceCheckpoint {
   selectedDatasetIds: string[];
   targetMode: "all" | "single";
   discoveryConfig: DiscoveryConfig;
+  marketSessionConfig?: MarketSessionConfig;
   featureOverrides: Record<string, unknown>;
   patterns: Pattern[];
   validationResults: ValidationResult[];

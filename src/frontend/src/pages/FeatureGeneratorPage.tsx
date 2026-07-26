@@ -3,6 +3,7 @@ import { DefinitionManager } from "@/components/DefinitionManager";
 import { EmptyState } from "@/components/EmptyState";
 import { FeatureCatalog } from "@/components/FeatureCatalog";
 import { FeatureStats } from "@/components/FeatureStats";
+import { MarketSessionSettings } from "@/components/MarketSessionSettings";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { buildResearchUniverse } from "@/lib/researchUniverse";
@@ -196,6 +197,9 @@ export default function FeatureGeneratorPage() {
           ) : null}
         </div>
         <div className="mx-auto max-w-5xl">
+          <MarketSessionSettings />
+        </div>
+        <div className="mx-auto max-w-5xl">
           <DefinitionManager />
         </div>
       </div>
@@ -296,6 +300,8 @@ export default function FeatureGeneratorPage() {
           <DataPreview dataset={dataset} />
         </section>
       )}
+
+      <MarketSessionSettings />
 
       {/* Summary header */}
       <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-4 shadow-subtle sm:flex-row sm:items-center sm:justify-between">
