@@ -76,12 +76,19 @@ export function buildReproductionRecipe(
   );
 
   const incomplete = recipeConditions.some((condition) => !condition.formula);
-  const missingCustomSettings = recipeConditions.some(
-    (condition) =>
-      condition.source === "custom" &&
-      (!condition.definitionParameters ||
-        Object.keys(condition.definitionParameters).length === 0),
-  );
+  const identityOnlyKeys = new Set([
+    "indicatorSourceId",
+    "columnIdentity",
+    "outputName",
+  ]);
+  const missingCustomSettings = recipeConditions.some((condition) => {
+    if (condition.source !== "custom") return false;
+    const parameters = condition.definitionParameters;
+    if (!parameters) return true;
+    // Mapping identity proves which uploaded column was used, but it does not
+    // preserve the calculation inputs needed to rebuild the source indicator.
+    return !Object.keys(parameters).some((key) => !identityOnlyKeys.has(key));
+  });
   const portability = incomplete
     ? "incomplete"
     : missingCustomSettings

@@ -1913,7 +1913,10 @@ export async function runDiscovery(
       horizonAnalysis,
       winRate: selected.everyMatch.winRate,
       baselineWinRate: selected.baselineWinRate,
-      liftVsBaseline: selected.liftVsBaseline,
+      // The headline win rate is the every-match statistic, so its displayed
+      // lift must use that same population. Horizon eligibility separately
+      // uses the non-overlapping lift stored on HorizonPerformance.
+      liftVsBaseline: selected.everyMatch.winRate - selected.baselineWinRate,
       avgMove: signedAverage,
       avgMAE: selected.avgMAE,
       avgMFE: selected.avgMFE,

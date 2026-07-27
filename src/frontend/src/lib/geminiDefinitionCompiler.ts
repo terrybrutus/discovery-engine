@@ -380,6 +380,7 @@ export async function compileDefinitionsWithGemini(
     "Changing chart order can change column position, so this request is a fresh mapping. Do not assume a saved positional mapping.",
     "canonicalName must be specific enough to distinguish repeated outputs, for example 'BB 20/2 Upper' versus 'Keltner 20/1.5 Upper'.",
     "outputName is the source variable or plot title that produced the field. mappingReason briefly states the concrete evidence.",
+    "When source code is supplied, parameters MUST preserve every calculation input required to reproduce the mapped output: lengths, multipliers, smoothing methods, price source, volatility method, and relevant input defaults. Use concise parameter names and concrete values from the source; do not return an empty parameters object for a mapped source.",
     "Classify what each output represents and which generic relationships are mathematically valid.",
     "Absolute price-valued series and cumulative totals must be marked non-stationary.",
     "Bands must be identified as upper-band, lower-band, or basis so the engine can compare width and nesting.",

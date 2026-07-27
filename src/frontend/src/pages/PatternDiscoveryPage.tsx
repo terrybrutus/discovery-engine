@@ -6,6 +6,7 @@ import { EconomicViabilityControls } from "@/components/EconomicViabilityControl
 import { EmptyState } from "@/components/EmptyState";
 import { PatternDetailModal } from "@/components/PatternDetailModal";
 import { PatternResultsTable } from "@/components/PatternResultsTable";
+import { SystemRecommendationPanel } from "@/components/SystemRecommendationPanel";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Collapsible,
@@ -549,6 +550,13 @@ export default function PatternDiscoveryPage() {
               <EconomicViabilityControls
                 visibleCount={enrichedPatterns.length}
                 totalCount={patterns.length}
+              />
+              <SystemRecommendationPanel
+                patterns={enrichedPatterns}
+                onOpenPattern={(pattern) => {
+                  setSelected(pattern);
+                  setModalOpen(true);
+                }}
               />
               {enrichedPatterns.length > 0 ? (
                 <PatternResultsTable

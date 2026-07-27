@@ -13,6 +13,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { adjustForCosts } from "@/lib/costAnalysis";
+import { buildMultiTimeframeResearchSpace } from "@/lib/multiTimeframe";
 import { formatDefinitionParameters } from "@/lib/reproductionRecipe";
 import { cn } from "@/lib/utils";
 import { useEngineStore } from "@/store/engineStore";
@@ -163,7 +164,7 @@ function computeHistogram(
     if (!ok) continue;
     const entry = bars[i].close;
     const exit = bars[i + horizon].close;
-    returns.push(exit - entry);
+    if (entry !== 0) returns.push(((exit - entry) / entry) * 100);
   }
 
   if (returns.length === 0) return [];
@@ -189,7 +190,7 @@ function computeHistogram(
       range: `${lo.toFixed(2)} to ${hi.toFixed(2)}`,
       count: 0,
       mid,
-      positive: mid >= 0,
+      positive: pattern.direction === "bearish" ? mid < 0 : mid >= 0,
     });
   }
   for (const r of returns) {
@@ -262,15 +263,38 @@ export function PatternDetailModal({
   open,
   onOpenChange,
 }: PatternDetailModalProps) {
-  const dataset = useEngineStore((s) => s.dataset);
-  const features = useEngineStore((s) => s.features);
-  const featureValues = useEngineStore((s) => s.featureValues);
+  const datasets = useEngineStore((s) => s.datasets);
+  const selectedDatasetIds = useEngineStore((s) => s.selectedDatasetIds);
+  const featuresByDataset = useEngineStore((s) => s.featuresByDataset);
+  const featureValuesByDataset = useEngineStore(
+    (s) => s.featureValuesByDataset,
+  );
   const discoveryConfig = useEngineStore((s) => s.discoveryConfig);
 
   const histogram = useMemo(() => {
-    if (!pattern || !dataset || !featureValues) return [];
-    return computeHistogram(dataset.bars, features, featureValues, pattern);
-  }, [pattern, dataset, features, featureValues]);
+    if (!pattern) return [];
+    const target =
+      datasets.find((item) => item.id === pattern.targetDatasetId) ??
+      datasets[0];
+    if (!target) return [];
+    const selected = datasets.filter((item) =>
+      selectedDatasetIds.includes(item.id),
+    );
+    const space = buildMultiTimeframeResearchSpace(
+      target,
+      selected.length > 0 ? selected : [target],
+      featuresByDataset,
+      featureValuesByDataset,
+      target.id,
+    );
+    return computeHistogram(target.bars, space.features, space.matrix, pattern);
+  }, [
+    datasets,
+    featureValuesByDataset,
+    featuresByDataset,
+    pattern,
+    selectedDatasetIds,
+  ]);
 
   if (!pattern) return null;
 
@@ -878,7 +902,9 @@ export function PatternDetailModal({
           <p className="text-xs text-muted-foreground">
             How the {fmtInt(pattern.sampleSize)} matching bars were distributed
             by their forward return over the {pattern.horizon ?? "—"}-bar hold.
-            Bars to the right of zero were winners.
+            {pattern.direction === "bearish"
+              ? " Bars to the left of zero favored the bearish pattern."
+              : " Bars to the right of zero favored the bullish pattern."}
           </p>
           <div
             data-ocid="pattern_detail_modal.histogram"
