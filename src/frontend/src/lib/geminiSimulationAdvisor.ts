@@ -28,9 +28,12 @@ function schema() {
         required: [
           "entryMode",
           "entryExpiryBars",
+          "stopMode",
           "stopPct",
+          "stopAtrMultiple",
           "targetMode",
           "targetPct",
+          "targetAtrMultiple",
           "rewardRiskMultiple",
           "maxHoldBars",
           "roundTripCostBps",
@@ -44,12 +47,24 @@ function schema() {
             enum: ["next-open", "signal-close", "box-boundary-limit"],
           },
           entryExpiryBars: { type: "INTEGER" },
+          stopMode: {
+            type: "STRING",
+            enum: ["fixed-percent", "atr-multiple"],
+          },
           stopPct: { type: "NUMBER" },
+          stopAtrMultiple: { type: "NUMBER" },
           targetMode: {
             type: "STRING",
-            enum: ["fixed-percent", "risk-multiple", "box-midpoint"],
+            enum: [
+              "fixed-percent",
+              "risk-multiple",
+              "atr-multiple",
+              "time-only",
+              "box-midpoint",
+            ],
           },
           targetPct: { type: "NUMBER" },
+          targetAtrMultiple: { type: "NUMBER" },
           rewardRiskMultiple: { type: "NUMBER" },
           maxHoldBars: { type: "INTEGER" },
           roundTripCostBps: { type: "NUMBER" },
@@ -88,6 +103,7 @@ export async function recommendSimulationWithGemini(input: {
     "You do not calculate profitability and must not claim the pattern works. The deterministic browser simulator will calculate every trade from uploaded bars.",
     "Use box-boundary-limit plus box-midpoint only if the recipe explicitly describes adjusted previous-session box boundaries or midpoint behavior. Otherwise prefer next-open because the discovery signal becomes known after its observation closes.",
     "Use nonOverlapping=true. Use the recommended pattern horizon when present. Infer stop/target starting values from stored MFE/MAE only as exploratory assumptions and clearly warn that they are not optimized rules.",
+    "A time-only target is appropriate when the discovered fixed-hold outcome is stronger than arbitrary price targets. ATR-based stops and targets are appropriate when volatility-normalized execution is more portable than fixed percentages.",
     `Pattern metadata: ${JSON.stringify({
       label: input.pattern.label,
       direction: input.pattern.direction,
@@ -150,9 +166,19 @@ export async function recommendSimulationWithGemini(input: {
           50,
         ),
       ),
+      stopMode:
+        proposed.stopMode === "atr-multiple" ? "atr-multiple" : "fixed-percent",
       stopPct: finite(proposed.stopPct, input.currentConfig.stopPct, 0.001, 25),
+      stopAtrMultiple: finite(
+        proposed.stopAtrMultiple,
+        input.currentConfig.stopAtrMultiple,
+        0.1,
+        10,
+      ),
       targetMode:
         proposed.targetMode === "fixed-percent" ||
+        proposed.targetMode === "atr-multiple" ||
+        proposed.targetMode === "time-only" ||
         proposed.targetMode === "box-midpoint"
           ? proposed.targetMode
           : "risk-multiple",
@@ -161,6 +187,12 @@ export async function recommendSimulationWithGemini(input: {
         input.currentConfig.targetPct,
         0.001,
         50,
+      ),
+      targetAtrMultiple: finite(
+        proposed.targetAtrMultiple,
+        input.currentConfig.targetAtrMultiple,
+        0.1,
+        20,
       ),
       rewardRiskMultiple: finite(
         proposed.rewardRiskMultiple,

@@ -22,7 +22,7 @@ import { buildMultiTimeframeResearchSpace } from "@/lib/multiTimeframe";
 import { useEngineStore } from "@/store/engineStore";
 import type { Pattern } from "@/types";
 import { Download, FlaskConical, Gauge, Play, Sparkles } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 function money(value: number): string {
   return new Intl.NumberFormat("en-US", {
@@ -97,6 +97,10 @@ export function CandidateSystemSimulator({ pattern }: { pattern: Pattern }) {
     (state) => state.saveSystemOptimization,
   );
   const optimization = localOptimization ?? savedOptimization;
+
+  useEffect(() => {
+    if (savedOptimization) setExpanded(true);
+  }, [savedOptimization]);
 
   const research = useMemo(() => {
     if (!expanded) return null;
@@ -193,6 +197,22 @@ export function CandidateSystemSimulator({ pattern }: { pattern: Pattern }) {
               </select>
             </div>
             <div className="space-y-1.5">
+              <Label>Stop rule</Label>
+              <select
+                className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                value={config.stopMode ?? "fixed-percent"}
+                onChange={(event) =>
+                  patch({
+                    stopMode: event.target
+                      .value as CandidateSimulationConfig["stopMode"],
+                  })
+                }
+              >
+                <option value="fixed-percent">Fixed protective %</option>
+                <option value="atr-multiple">ATR-based protective stop</option>
+              </select>
+            </div>
+            <div className="space-y-1.5">
               <Label>Target rule</Label>
               <select
                 className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
@@ -206,15 +226,26 @@ export function CandidateSystemSimulator({ pattern }: { pattern: Pattern }) {
               >
                 <option value="risk-multiple">Reward:risk multiple</option>
                 <option value="fixed-percent">Fixed favorable %</option>
+                <option value="atr-multiple">ATR-based target</option>
+                <option value="time-only">Time exit only</option>
                 <option value="box-midpoint">Adjusted box midpoint</option>
               </select>
             </div>
-            <NumericField
-              label="Stop distance %"
-              value={config.stopPct}
-              step={0.01}
-              onChange={(stopPct) => patch({ stopPct })}
-            />
+            {(config.stopMode ?? "fixed-percent") === "atr-multiple" ? (
+              <NumericField
+                label="Stop ATR multiple"
+                value={config.stopAtrMultiple ?? 1}
+                step={0.1}
+                onChange={(stopAtrMultiple) => patch({ stopAtrMultiple })}
+              />
+            ) : (
+              <NumericField
+                label="Stop distance %"
+                value={config.stopPct}
+                step={0.01}
+                onChange={(stopPct) => patch({ stopPct })}
+              />
+            )}
             {config.targetMode === "risk-multiple" ? (
               <NumericField
                 label="Reward:risk target"
@@ -229,6 +260,18 @@ export function CandidateSystemSimulator({ pattern }: { pattern: Pattern }) {
                 step={0.01}
                 onChange={(targetPct) => patch({ targetPct })}
               />
+            ) : config.targetMode === "atr-multiple" ? (
+              <NumericField
+                label="Target ATR multiple"
+                value={config.targetAtrMultiple ?? 2}
+                step={0.1}
+                onChange={(targetAtrMultiple) => patch({ targetAtrMultiple })}
+              />
+            ) : config.targetMode === "time-only" ? (
+              <div className="rounded border border-border bg-background p-3 text-xs text-muted-foreground">
+                No profit target. The protective stop remains active and any
+                surviving trade exits after the selected hold.
+              </div>
             ) : (
               <NumericField
                 label="Limit valid for bars"
@@ -409,6 +452,42 @@ export function CandidateSystemSimulator({ pattern }: { pattern: Pattern }) {
                     setOptimizerConfig((current) => ({
                       ...current,
                       sealedHoldoutPct,
+                    }))
+                  }
+                />
+                <NumericField
+                  label="Minimum final expectancy (R)"
+                  value={optimizerConfig.minHoldoutExpectancyR}
+                  min={0}
+                  step={0.05}
+                  onChange={(minHoldoutExpectancyR) =>
+                    setOptimizerConfig((current) => ({
+                      ...current,
+                      minHoldoutExpectancyR,
+                    }))
+                  }
+                />
+                <NumericField
+                  label="Minimum final profit factor"
+                  value={optimizerConfig.minHoldoutProfitFactor}
+                  min={1}
+                  step={0.1}
+                  onChange={(minHoldoutProfitFactor) =>
+                    setOptimizerConfig((current) => ({
+                      ...current,
+                      minHoldoutProfitFactor,
+                    }))
+                  }
+                />
+                <NumericField
+                  label="Cost stress multiplier"
+                  value={optimizerConfig.costStressMultiplier}
+                  min={1}
+                  step={0.5}
+                  onChange={(costStressMultiplier) =>
+                    setOptimizerConfig((current) => ({
+                      ...current,
+                      costStressMultiplier,
                     }))
                   }
                 />
@@ -635,7 +714,7 @@ function OptimizationResults({
           <div>
             <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               {recommended
-                ? "Recommended candidate"
+                ? "Robust research candidate"
                 : "No candidate cleared every safeguard"}
             </div>
             <p className="mt-1 text-sm font-medium text-foreground">
@@ -679,6 +758,7 @@ function OptimizationResults({
               <th className="px-2 py-2 text-right">Final trades</th>
               <th className="px-2 py-2 text-right">Final exp.</th>
               <th className="px-2 py-2 text-right">Final PF</th>
+              <th className="px-2 py-2 text-right">Stress-cost exp.</th>
               <th className="px-2 py-2 text-right">Status</th>
             </tr>
           </thead>
@@ -714,6 +794,11 @@ function OptimizationResults({
                 <td className="px-2 py-2 text-right font-mono">
                   {candidate.sealedHoldout.profitFactor?.toFixed(2) ?? "—"}
                 </td>
+                <td className="px-2 py-2 text-right font-mono">
+                  {candidate.costStressHoldout
+                    ? `${candidate.costStressHoldout.expectancyR.toFixed(2)}R`
+                    : "—"}
+                </td>
                 <td
                   className={
                     candidate.eligible
@@ -721,7 +806,7 @@ function OptimizationResults({
                       : "px-2 py-2 text-right text-muted-foreground"
                   }
                 >
-                  {candidate.eligible ? "Passed" : "Research only"}
+                  {candidate.eligible ? "Robust candidate" : "Rejected"}
                 </td>
               </tr>
             ))}

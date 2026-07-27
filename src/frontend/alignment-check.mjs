@@ -102,9 +102,12 @@ try {
     config: {
       entryMode: "next-open",
       entryExpiryBars: 1,
+      stopMode: "fixed-percent",
       stopPct: 1,
+      stopAtrMultiple: 1,
       targetMode: "risk-multiple",
       targetPct: 1,
+      targetAtrMultiple: 2,
       rewardRiskMultiple: 1,
       maxHoldBars: 2,
       roundTripCostBps: 0,
@@ -126,6 +129,55 @@ try {
     Math.abs(simulation.netProfit - 500) > 1e-9
   ) {
     throw new Error("Candidate-system execution regression failed.");
+  }
+  const timeOnlySimulation = simulateCandidateSystem({
+    pattern: {
+      id: "time-exit-regression",
+      conditions: [
+        { featureId: "event", operator: "eq", bucketLabel: "Yes" },
+      ],
+      label: "Synthetic time-exit event",
+      direction: "bullish",
+      winRate: 100,
+      avgMove: 1,
+      avgMAE: 0.5,
+      avgMFE: 1.2,
+      sampleSize: 1,
+      confidence: "low",
+      score: 1,
+      horizon: 2,
+    },
+    bars: simulationBars,
+    matrix: { event: ["Yes", "No", "No"] },
+    config: {
+      entryMode: "next-open",
+      entryExpiryBars: 1,
+      stopMode: "fixed-percent",
+      stopPct: 5,
+      stopAtrMultiple: 1,
+      targetMode: "time-only",
+      targetPct: 1,
+      targetAtrMultiple: 2,
+      rewardRiskMultiple: 1,
+      maxHoldBars: 2,
+      roundTripCostBps: 0,
+      startingCapital: 50_000,
+      riskPerTradePct: 1,
+      nonOverlapping: true,
+    },
+    session: {
+      timeZone: "America/New_York",
+      regularOpenMinutes: 570,
+      regularCloseMinutes: 960,
+      openingRangeMinutes: 30,
+      tradingDayStartMinutes: 1080,
+    },
+  });
+  if (
+    timeOnlySimulation.trades.length !== 1 ||
+    timeOnlySimulation.trades[0].result !== "time"
+  ) {
+    throw new Error("Time-only candidate exit regression failed.");
   }
   const optimizerBars = Array.from({ length: 240 }, (_, index) => {
     const precedingSignal = index > 0 && (index - 1) % 6 === 0;
@@ -174,9 +226,12 @@ try {
     baseConfig: {
       entryMode: "next-open",
       entryExpiryBars: 1,
+      stopMode: "fixed-percent",
       stopPct: 0.1,
+      stopAtrMultiple: 1,
       targetMode: "fixed-percent",
       targetPct: 0.1,
+      targetAtrMultiple: 2,
       rewardRiskMultiple: 1,
       maxHoldBars: 1,
       roundTripCostBps: 0,
@@ -199,6 +254,42 @@ try {
     !optimizerRecommendation.sealedHoldoutPassed
   ) {
     throw new Error("Walk-forward candidate-system optimizer regression failed.");
+  }
+  const strictOptimizerResult = optimizeCandidateSystem({
+    pattern: optimizerPattern,
+    bars: optimizerBars,
+    matrix: {
+      event: optimizerBars.map((_, index) =>
+        index % 6 === 0 ? "Yes" : "No",
+      ),
+    },
+    session: {
+      timeZone: "America/New_York",
+      regularOpenMinutes: 570,
+      regularCloseMinutes: 960,
+      openingRangeMinutes: 30,
+      tradingDayStartMinutes: 1080,
+    },
+    baseConfig: {
+      entryMode: "next-open",
+      entryExpiryBars: 1,
+      stopMode: "fixed-percent",
+      stopPct: 0.1,
+      stopAtrMultiple: 1,
+      targetMode: "fixed-percent",
+      targetPct: 0.1,
+      targetAtrMultiple: 2,
+      rewardRiskMultiple: 1,
+      maxHoldBars: 1,
+      roundTripCostBps: 5,
+      startingCapital: 50_000,
+      riskPerTradePct: 1,
+      nonOverlapping: true,
+    },
+    optimizerConfig: { maxCandidates: 40 },
+  });
+  if (strictOptimizerResult.recommendedCandidateId !== null) {
+    throw new Error("Strict system safeguard regression failed.");
   }
   const parse = (name, minutes, rows = 10) => {
     const result = parseCsv(

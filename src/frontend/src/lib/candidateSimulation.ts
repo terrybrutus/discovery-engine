@@ -10,17 +10,23 @@ export type SimulationEntryMode =
   | "next-open"
   | "signal-close"
   | "box-boundary-limit";
+export type SimulationStopMode = "fixed-percent" | "atr-multiple";
 export type SimulationTargetMode =
   | "fixed-percent"
   | "risk-multiple"
+  | "atr-multiple"
+  | "time-only"
   | "box-midpoint";
 
 export interface CandidateSimulationConfig {
   entryMode: SimulationEntryMode;
   entryExpiryBars: number;
+  stopMode: SimulationStopMode;
   stopPct: number;
+  stopAtrMultiple: number;
   targetMode: SimulationTargetMode;
   targetPct: number;
+  targetAtrMultiple: number;
   rewardRiskMultiple: number;
   maxHoldBars: number;
   roundTripCostBps: number;
@@ -69,9 +75,12 @@ export interface CandidateSimulationResult {
 export const DEFAULT_SIMULATION_CONFIG: CandidateSimulationConfig = {
   entryMode: "next-open",
   entryExpiryBars: 3,
+  stopMode: "fixed-percent",
   stopPct: 0.25,
+  stopAtrMultiple: 1,
   targetMode: "risk-multiple",
   targetPct: 0.5,
+  targetAtrMultiple: 2,
   rewardRiskMultiple: 2,
   maxHoldBars: 12,
   roundTripCostBps: 5,
@@ -135,6 +144,33 @@ function marketDateKey(
   }).format(timestamp);
 }
 
+const ATR_CACHE = new WeakMap<OHLCVBar[], number[]>();
+
+function atrSeries(bars: OHLCVBar[], length = 14): number[] {
+  const cached = ATR_CACHE.get(bars);
+  if (cached) return cached;
+  const result = new Array<number>(bars.length).fill(Number.NaN);
+  if (bars.length === 0) return result;
+  let running = 0;
+  for (let index = 0; index < bars.length; index++) {
+    const previousClose = index > 0 ? bars[index - 1].close : bars[index].close;
+    const trueRange = Math.max(
+      bars[index].high - bars[index].low,
+      Math.abs(bars[index].high - previousClose),
+      Math.abs(bars[index].low - previousClose),
+    );
+    if (index < length) {
+      running += trueRange;
+      if (index === length - 1) result[index] = running / length;
+    } else {
+      result[index] =
+        ((result[index - 1] || trueRange) * (length - 1) + trueRange) / length;
+    }
+  }
+  ATR_CACHE.set(bars, result);
+  return result;
+}
+
 export function simulateCandidateSystem(input: {
   pattern: Pattern;
   bars: OHLCVBar[];
@@ -147,7 +183,7 @@ export function simulateCandidateSystem(input: {
   const { pattern, bars, matrix, config, session } = input;
   const direction = pattern.direction === "bearish" ? -1 : 1;
   const costPct = Math.max(0, config.roundTripCostBps) / 100;
-  const stopPct = Math.max(0.001, config.stopPct);
+  const atr = atrSeries(bars);
   const trades: SimulatedTrade[] = [];
   let matchingSignals = 0;
   let skippedUnfilled = 0;
@@ -210,6 +246,14 @@ export function simulateCandidateSystem(input: {
     }
     if (!Number.isFinite(entryPrice) || entryIndex >= bars.length) continue;
 
+    const entryAtr = Number.isFinite(atr[entryIndex])
+      ? atr[entryIndex]
+      : Math.abs(entryPrice) * (Math.max(0.001, config.stopPct) / 100);
+    const stopPct =
+      (config.stopMode ?? "fixed-percent") === "atr-multiple"
+        ? (entryAtr * Math.max(0.1, config.stopAtrMultiple ?? 1) * 100) /
+          Math.abs(entryPrice)
+        : Math.max(0.001, config.stopPct);
     const stopPrice = entryPrice * (1 - (direction * stopPct) / 100);
     let targetPrice =
       config.targetMode === "risk-multiple"
@@ -219,6 +263,14 @@ export function simulateCandidateSystem(input: {
               ((stopPct * Math.max(0.1, config.rewardRiskMultiple)) / 100))
         : entryPrice *
           (1 + (direction * Math.max(0.001, config.targetPct)) / 100);
+    if (config.targetMode === "atr-multiple") {
+      targetPrice =
+        entryPrice +
+        direction * entryAtr * Math.max(0.1, config.targetAtrMultiple ?? 2);
+    } else if (config.targetMode === "time-only") {
+      targetPrice =
+        direction > 0 ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY;
+    }
     if (config.targetMode === "box-midpoint") {
       const midpoint = numericAt(matrix, "__adjusted_pds_mid", signalIndex);
       if (

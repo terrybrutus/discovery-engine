@@ -349,6 +349,12 @@ export default function ReportPage() {
                       PF{" "}
                       {candidate.sealedHoldout.profitFactor?.toFixed(2) ?? "—"}
                     </span>
+                    <span>
+                      Stress cost{" "}
+                      {candidate.costStressHoldout
+                        ? `${candidate.costStressHoldout.expectancyR.toFixed(2)}R`
+                        : "—"}
+                    </span>
                   </div>
                   <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
                     {integrityWarning}

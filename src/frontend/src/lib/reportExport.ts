@@ -78,6 +78,7 @@ export function buildReportMarkdown(
         `- Sealed holdout trades: ${recommended.sealedHoldout.trades.length}`,
         `- Sealed holdout expectancy: ${recommended.sealedHoldout.expectancyR.toFixed(2)}R`,
         `- Sealed holdout profit factor: ${recommended.sealedHoldout.profitFactor?.toFixed(2) ?? "—"}`,
+        `- Stress-cost holdout expectancy: ${recommended.costStressHoldout?.expectancyR.toFixed(2) ?? "—"}R`,
         "",
       );
     }

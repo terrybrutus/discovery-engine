@@ -44,6 +44,7 @@ function baseSimulationConfig(
     maxHoldBars:
       pattern.horizonAnalysis?.recommendedHorizon ?? pattern.horizon ?? 12,
     roundTripCostBps,
+    stopMode: "fixed-percent",
     stopPct: Math.max(0.05, pattern.avgMAE || 0.25),
     targetPct: Math.max(0.05, pattern.avgMFE || 0.5),
     nonOverlapping: true,
@@ -203,12 +204,12 @@ export function SystemRecommendationPanel({
         <div className="mt-4 rounded border border-primary/30 bg-background p-4">
           <div className="flex items-center gap-2 text-sm font-semibold text-primary">
             <ShieldCheck className="size-4" aria-hidden="true" />
-            Best safeguard-clearing research system
+            Best robust research candidate
           </div>
           <p className="mt-2 text-sm font-medium text-foreground">
             {recommended.candidate.recipe.oneSentenceRule}
           </p>
-          <div className="mt-3 grid gap-2 text-xs sm:grid-cols-4">
+          <div className="mt-3 grid gap-2 text-xs sm:grid-cols-5">
             <div>
               <span className="text-muted-foreground">Walk-forward</span>
               <div className="font-mono">
@@ -233,6 +234,15 @@ export function SystemRecommendationPanel({
               <div className="font-mono">
                 {recommended.candidate.sealedHoldout.profitFactor?.toFixed(2) ??
                   "—"}
+              </div>
+            </div>
+            <div>
+              <span className="text-muted-foreground">
+                Stress-cost expectancy
+              </span>
+              <div className="font-mono">
+                {recommended.candidate.costStressHoldout.expectancyR.toFixed(2)}
+                R
               </div>
             </div>
           </div>

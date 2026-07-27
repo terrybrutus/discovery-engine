@@ -15,6 +15,9 @@ export interface SystemOptimizerConfig {
   walkForwardFolds: number;
   minDevelopmentTrades: number;
   minHoldoutTrades: number;
+  minHoldoutExpectancyR: number;
+  minHoldoutProfitFactor: number;
+  costStressMultiplier: number;
   maxCandidates: number;
 }
 
@@ -52,6 +55,7 @@ export interface OptimizedSystemCandidate {
   development: CandidateSimulationResult;
   walkForward: WalkForwardSystemAudit;
   sealedHoldout: CandidateSimulationResult;
+  costStressHoldout: CandidateSimulationResult;
   scoreBeforeHoldout: number;
   complexityPenalty: number;
   walkForwardPassed: boolean;
@@ -79,9 +83,12 @@ export interface CandidateSystemOptimization {
 export const DEFAULT_SYSTEM_OPTIMIZER_CONFIG: SystemOptimizerConfig = {
   sealedHoldoutPct: 20,
   walkForwardFolds: 4,
-  minDevelopmentTrades: 20,
-  minHoldoutTrades: 5,
-  maxCandidates: 160,
+  minDevelopmentTrades: 50,
+  minHoldoutTrades: 20,
+  minHoldoutExpectancyR: 0.1,
+  minHoldoutProfitFactor: 1.3,
+  costStressMultiplier: 2,
+  maxCandidates: 240,
 };
 
 function uniqueNumbers(values: number[]): number[] {
@@ -123,7 +130,31 @@ function buildConstrainedGrid(
     "signal-close",
     ...(box ? (["box-boundary-limit"] as const) : []),
   ];
-  const stops = [0.1, 0.25, 0.5, 1];
+  const pathStop = pattern.outcomeProfile?.medianMAE;
+  const pathTarget = pattern.outcomeProfile?.medianMFE;
+  const fixedStops = uniqueNumbers([
+    0.1,
+    0.25,
+    0.5,
+    1,
+    ...(pathStop != null && pathStop >= 0.02 && pathStop <= 5
+      ? [Number(pathStop.toFixed(3))]
+      : []),
+  ]);
+  const stops: Array<
+    Pick<CandidateSimulationConfig, "stopMode" | "stopPct" | "stopAtrMultiple">
+  > = [
+    ...fixedStops.map((stopPct) => ({
+      stopMode: "fixed-percent" as const,
+      stopPct,
+      stopAtrMultiple: base.stopAtrMultiple ?? 1,
+    })),
+    ...[0.5, 1, 1.5, 2].map((stopAtrMultiple) => ({
+      stopMode: "atr-multiple" as const,
+      stopPct: base.stopPct,
+      stopAtrMultiple,
+    })),
+  ];
   const holds = uniqueNumbers([
     1,
     2,
@@ -139,32 +170,55 @@ function buildConstrainedGrid(
   const targets: Array<
     Pick<
       CandidateSimulationConfig,
-      "targetMode" | "targetPct" | "rewardRiskMultiple"
+      "targetMode" | "targetPct" | "rewardRiskMultiple" | "targetAtrMultiple"
     >
   > = [
     ...[1, 1.5, 2, 3].map((rewardRiskMultiple) => ({
       targetMode: "risk-multiple" as const,
       targetPct: base.targetPct,
       rewardRiskMultiple,
+      targetAtrMultiple: base.targetAtrMultiple ?? 2,
     })),
-    ...[0.1, 0.25, 0.5, 1].map((targetPct) => ({
+    ...uniqueNumbers([
+      0.1,
+      0.25,
+      0.5,
+      1,
+      ...(pathTarget != null && pathTarget >= 0.02 && pathTarget <= 10
+        ? [Number(pathTarget.toFixed(3))]
+        : []),
+    ]).map((targetPct) => ({
       targetMode: "fixed-percent" as const,
       targetPct,
       rewardRiskMultiple: base.rewardRiskMultiple,
+      targetAtrMultiple: base.targetAtrMultiple ?? 2,
     })),
+    ...[0.5, 1, 1.5, 2, 3].map((targetAtrMultiple) => ({
+      targetMode: "atr-multiple" as const,
+      targetPct: base.targetPct,
+      rewardRiskMultiple: base.rewardRiskMultiple,
+      targetAtrMultiple,
+    })),
+    {
+      targetMode: "time-only" as const,
+      targetPct: base.targetPct,
+      rewardRiskMultiple: base.rewardRiskMultiple,
+      targetAtrMultiple: base.targetAtrMultiple ?? 2,
+    },
     ...(box
       ? [
           {
             targetMode: "box-midpoint" as const,
             targetPct: base.targetPct,
             rewardRiskMultiple: base.rewardRiskMultiple,
+            targetAtrMultiple: base.targetAtrMultiple ?? 2,
           },
         ]
       : []),
   ];
   const grid: CandidateSimulationConfig[] = [];
   for (const hold of holds) {
-    for (const stopPct of stops) {
+    for (const stop of stops) {
       for (const target of targets) {
         for (const entryMode of entries) {
           if (
@@ -176,8 +230,8 @@ function buildConstrainedGrid(
           grid.push({
             ...base,
             ...target,
+            ...stop,
             entryMode,
-            stopPct,
             maxHoldBars: hold,
             entryExpiryBars: Math.max(1, Math.min(8, hold)),
             nonOverlapping: true,
@@ -199,6 +253,9 @@ function complexityPenalty(config: CandidateSimulationConfig): number {
   let penalty = 0;
   if (config.entryMode !== "next-open") penalty += 0.08;
   if (config.targetMode === "box-midpoint") penalty += 0.04;
+  if (config.targetMode === "time-only") penalty -= 0.03;
+  if ((config.stopMode ?? "fixed-percent") === "atr-multiple") penalty += 0.02;
+  if (config.targetMode === "atr-multiple") penalty += 0.02;
   if (config.maxHoldBars > 21) penalty += 0.04;
   return penalty;
 }
@@ -293,7 +350,17 @@ function plainExit(config: CandidateSimulationConfig): string {
     return "Take profit at the middle of the adjusted previous-session box.";
   if (config.targetMode === "fixed-percent")
     return `Take profit after price moves ${config.targetPct}% in your favor.`;
+  if (config.targetMode === "atr-multiple")
+    return `Take profit ${config.targetAtrMultiple} ATR from entry.`;
+  if (config.targetMode === "time-only")
+    return "Do not use a fixed profit target; exit when the maximum hold ends.";
   return `Take profit at ${config.rewardRiskMultiple}:1 reward compared with the stop.`;
+}
+
+function plainStop(config: CandidateSimulationConfig): string {
+  return (config.stopMode ?? "fixed-percent") === "atr-multiple"
+    ? `Use a ${config.stopAtrMultiple} ATR protective stop.`
+    : `Use a ${config.stopPct}% stop.`;
 }
 
 function buildRecipe(
@@ -304,13 +371,14 @@ function buildRecipe(
   const conditions = operatorText(pattern);
   const entry = plainEntry(config);
   const exit = plainExit(config);
+  const stop = plainStop(config);
   return {
     title: `${pattern.targetDatasetLabel ?? "Market"} ${pattern.direction} candidate`,
-    oneSentenceRule: `When all ${conditions.length} signal checks are true, ${direction}. ${entry} Use a ${config.stopPct}% stop. ${exit} Otherwise close after ${config.maxHoldBars} candles.`,
+    oneSentenceRule: `When all ${conditions.length} signal checks are true, ${direction}. ${entry} ${stop} ${exit} Otherwise close after ${config.maxHoldBars} candles.`,
     steps: [
       `Wait until every signal check is true: ${conditions.join("; ")}.`,
       entry,
-      `Set the stop ${config.stopPct}% away from entry.`,
+      stop,
       exit,
       `Close the trade after ${config.maxHoldBars} candles if neither target nor stop was reached.`,
       "Do not open another trade while this one is active.",
@@ -445,14 +513,33 @@ export function optimizeCandidateSystem(input: {
         signalStartIndex: sealedHoldoutStartIndex,
         signalEndIndex: input.bars.length - 2,
       });
+      const costStressHoldout = simulateCandidateSystem({
+        pattern: input.pattern,
+        bars: input.bars,
+        matrix: input.matrix,
+        config: {
+          ...candidate.config,
+          roundTripCostBps: Math.max(
+            candidate.config.roundTripCostBps *
+              Math.max(1, settings.costStressMultiplier),
+            candidate.config.roundTripCostBps + 5,
+          ),
+        },
+        session: input.session,
+        signalStartIndex: sealedHoldoutStartIndex,
+        signalEndIndex: input.bars.length - 2,
+      });
       const walkForwardPassed =
         candidate.walkForward.profitableFolds >=
           Math.ceil(candidate.walkForward.folds * 0.75) &&
         candidate.walkForward.meanExpectancyR > 0;
       const sealedHoldoutPassed =
         sealedHoldout.trades.length >= settings.minHoldoutTrades &&
-        sealedHoldout.expectancyR > 0 &&
-        (sealedHoldout.profitFactor ?? 2) > 1;
+        sealedHoldout.expectancyR >= settings.minHoldoutExpectancyR &&
+        (sealedHoldout.profitFactor ?? Number.POSITIVE_INFINITY) >=
+          settings.minHoldoutProfitFactor &&
+        costStressHoldout.expectancyR > 0 &&
+        (costStressHoldout.profitFactor ?? Number.POSITIVE_INFINITY) > 1;
       return {
         id: candidate.id,
         developmentRank: index + 1,
@@ -460,6 +547,7 @@ export function optimizeCandidateSystem(input: {
         development: candidate.development,
         walkForward: candidate.walkForward,
         sealedHoldout,
+        costStressHoldout,
         scoreBeforeHoldout: candidate.scoreBeforeHoldout,
         complexityPenalty: candidate.complexity,
         walkForwardPassed,
@@ -483,10 +571,12 @@ export function optimizeCandidateSystem(input: {
     recommendedCandidateId: recommended?.id ?? null,
     candidates,
     methodology: [
-      "The parameter grid is deliberately small and fixed: common stops, targets, entries, and hold lengths only.",
+      "The parameter grid is deliberately constrained: common and observed-path fixed levels, ATR-scaled exits, time-only exits, normal entries, and bounded hold lengths.",
       "Candidates are ranked before the sealed final segment is opened.",
       "Walk-forward folds must be profitable in at least 75% of chronological test windows.",
-      "The final holdout is pass/fail only; it never improves a candidate's development rank.",
+      `The final holdout must contain at least ${settings.minHoldoutTrades} trades, at least ${settings.minHoldoutExpectancyR.toFixed(2)}R expectancy, and profit factor of at least ${settings.minHoldoutProfitFactor.toFixed(2)}.`,
+      `The final holdout must remain profitable when round-trip costs are multiplied by ${settings.costStressMultiplier}, with at least 5 additional basis points applied.`,
+      "The final holdout and cost stress are pass/fail only; they never improve a candidate's development rank.",
       "Simpler execution receives a small advantage over equally performing complicated execution.",
     ],
     integrityWarning:
