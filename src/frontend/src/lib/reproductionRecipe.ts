@@ -89,6 +89,12 @@ export function buildReproductionRecipe(
     // preserve the calculation inputs needed to rebuild the source indicator.
     return !Object.keys(parameters).some((key) => !identityOnlyKeys.has(key));
   });
+  const sourceBacked = recipeConditions.some(
+    (condition) =>
+      condition.source === "custom" &&
+      typeof condition.definitionParameters?.sourceRegistryId === "string" &&
+      typeof condition.definitionParameters?.sourceCodeHash === "string",
+  );
   const portability = incomplete
     ? "incomplete"
     : missingCustomSettings
@@ -109,7 +115,9 @@ export function buildReproductionRecipe(
     portability,
     portabilityNote:
       portability === "portable"
-        ? "The stored formulas and definition parameters are sufficient to rebuild this candidate, subject to matching data/session conventions."
+        ? sourceBacked
+          ? "The mapped Pine source and its extracted input defaults are stored in the global indicator registry, and the formulas are sufficient to rebuild this candidate subject to matching data/session conventions."
+          : "The stored formulas and definition parameters are sufficient to rebuild this candidate, subject to matching data/session conventions."
         : portability === "source-settings-required"
           ? "The result is exactly reproducible from the uploaded columns, but recreating the underlying indicator in TradingView still requires its source settings or Pine inputs."
           : "One or more feature formulas are missing. Treat this as descriptive until discovery is rerun with complete feature lineage.",

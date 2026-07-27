@@ -17,6 +17,11 @@ import {
   previewDefinitionCompilation,
 } from "@/lib/geminiDefinitionCompiler";
 import { useGeminiKey } from "@/lib/geminiKeyVault";
+import {
+  listIndicatorSources,
+  saveIndicatorSources,
+} from "@/lib/indicatorSourceRegistry";
+import { mergePineSourceParameters } from "@/lib/pineSourceMetadata";
 import { useEngineStore } from "@/store/engineStore";
 import type { IndicatorDefinition } from "@/types";
 import { useActor, useInternetIdentity } from "@caffeineai/core-infrastructure";
@@ -53,7 +58,7 @@ export function DefinitionManager() {
   const apiKey = useGeminiKey();
   const [indicatorSources, setIndicatorSources] = useState<
     IndicatorSourceInput[]
-  >([]);
+  >(() => listIndicatorSources());
   const [notes, setNotes] = useState("");
   const [running, setRunning] = useState(false);
   const [message, setMessage] = useState("");
@@ -78,6 +83,10 @@ export function DefinitionManager() {
   };
 
   useEffect(() => {
+    saveIndicatorSources(indicatorSources);
+  }, [indicatorSources]);
+
+  useEffect(() => {
     if (!isAuthenticated || actor === null) {
       syncedPrincipalRef.current = "";
       return;
@@ -91,6 +100,7 @@ export function DefinitionManager() {
         if (remote) importDefinitions(remote);
         await actor.saveMyDefinitionRegistry(exportDefinitions());
         setDefinitions(listDefinitions());
+        setIndicatorSources(listIndicatorSources());
         generateFeatures();
         setMessage("Definitions synchronized with your Internet Identity.");
       } catch (error) {
@@ -302,7 +312,8 @@ export function DefinitionManager() {
             <p className="mt-1 max-w-3xl text-[11px] leading-relaxed text-muted-foreground">
               Add each Pine indicator separately. Gemini uses its declaration,
               inputs, calculations, variables, and plot order to map duplicate
-              table columns. Sources remain visible and independently editable.
+              table columns. Sources and extracted input defaults are retained
+              globally in this browser and included in Internet Identity sync.
             </p>
           </div>
           <Button
@@ -440,7 +451,12 @@ export function DefinitionManager() {
                         definition: {
                           ...proposal.definition,
                           parameters: {
-                            ...(proposal.definition.parameters ?? {}),
+                            ...(source
+                              ? mergePineSourceParameters(
+                                  proposal.definition.parameters,
+                                  source,
+                                )
+                              : (proposal.definition.parameters ?? {})),
                             indicatorSourceId,
                           },
                         },

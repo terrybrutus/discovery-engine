@@ -43,8 +43,31 @@ try {
   const { optimizeCandidateSystem } = await server.ssrLoadModule(
     "/src/lib/candidateSystemOptimizer.ts",
   );
+  const { extractPineSourceParameters } = await server.ssrLoadModule(
+    "/src/lib/pineSourceMetadata.ts",
+  );
   const { buildDatasetFeatures, createAutomaticResearchPlan } =
     await server.ssrLoadModule("/src/store/engineStore.ts");
+
+  const pineParameters = extractPineSourceParameters({
+    id: "pine-regression",
+    name: "KC 21 / 2.5 ATR",
+    source: `//@version=6
+indicator("KC Regression", overlay=true)
+length = input.int(21, title="Length")
+multiplier = input.float(2.5, title="ATR multiplier")
+priceSource = input.source(close, title="Source")
+basis = ta.ema(priceSource, length)
+range = ta.atr(length) * multiplier`,
+  });
+  if (
+    pineParameters["input.length"] !== 21 ||
+    pineParameters["input.multiplier"] !== 2.5 ||
+    pineParameters["input.priceSource"] !== "close" ||
+    !String(pineParameters.calculationFunctions).includes("ta.atr")
+  ) {
+    throw new Error("Pine source parameter extraction regression failed.");
+  }
 
   const makeCsv = (start, minutes, rows) => {
     const lines = ["time,open,high,low,close"];

@@ -1,3 +1,8 @@
+import {
+  listIndicatorSources,
+  mergeIndicatorSources,
+} from "@/lib/indicatorSourceRegistry";
+import { mergePineSourceParameters } from "@/lib/pineSourceMetadata";
 import type {
   ColumnSemantic,
   IndicatorDefinition,
@@ -252,7 +257,23 @@ function readCustomDefinitions(): IndicatorDefinition[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isIndicatorDefinition);
+    const sources = new Map(
+      listIndicatorSources().map((source) => [source.id, source]),
+    );
+    return parsed.filter(isIndicatorDefinition).map((definition) => {
+      const sourceId = definition.parameters?.indicatorSourceId;
+      const source =
+        typeof sourceId === "string" ? sources.get(sourceId) : undefined;
+      return source
+        ? {
+            ...definition,
+            parameters: {
+              ...mergePineSourceParameters(definition.parameters, source),
+              indicatorSourceId: source.id,
+            },
+          }
+        : definition;
+    });
   } catch {
     return [];
   }
@@ -291,7 +312,11 @@ export function deleteDefinition(id: string): void {
 
 export function exportDefinitions(): string {
   return JSON.stringify(
-    { schemaVersion: REGISTRY_VERSION, definitions: readCustomDefinitions() },
+    {
+      schemaVersion: REGISTRY_VERSION,
+      definitions: readCustomDefinitions(),
+      indicatorSources: listIndicatorSources(),
+    },
     null,
     2,
   );
@@ -301,6 +326,7 @@ export function importDefinitions(json: string): IndicatorDefinition[] {
   const parsed = JSON.parse(json) as {
     schemaVersion?: number;
     definitions?: unknown[];
+    indicatorSources?: unknown[];
   };
   if (!Array.isArray(parsed.definitions)) {
     throw new Error("Definition file must contain a definitions array.");
@@ -319,6 +345,7 @@ export function importDefinitions(json: string): IndicatorDefinition[] {
   }
   const merged = [...byId.values()];
   writeCustomDefinitions(merged);
+  mergeIndicatorSources(parsed.indicatorSources);
   return merged;
 }
 

@@ -1,4 +1,5 @@
 import { validateDefinition } from "@/lib/definitionRegistry";
+import { mergePineSourceParameters } from "@/lib/pineSourceMetadata";
 import type { Dataset, IndicatorDefinition } from "@/types";
 
 // GA low-cost model. The previous 2.5 Flash-Lite endpoint is unavailable to
@@ -462,6 +463,12 @@ export async function compileDefinitionsWithGemini(
     const indicatorSourceName =
       boundedSources.find((source) => source.id === indicatorSourceId)?.name ??
       "Unmapped";
+    const mappedSource = indicatorSources.find(
+      (source) => source.id === indicatorSourceId,
+    );
+    const sourceParameters = mappedSource
+      ? mergePineSourceParameters(proposed.parameters, mappedSource)
+      : (proposed.parameters ?? {});
     const canonicalName =
       proposed.canonicalName ?? summary.displayLabel ?? "Imported series";
     const definition = validateDefinition({
@@ -480,7 +487,7 @@ export async function compileDefinitionsWithGemini(
       semantic: proposed.semantic ?? "generic",
       units: proposed.units ?? "unknown",
       parameters: {
-        ...(proposed.parameters ?? {}),
+        ...sourceParameters,
         indicatorSourceId,
         columnIdentity: summary.columnId,
         outputName: proposed.outputName ?? summary.label,
