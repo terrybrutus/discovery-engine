@@ -1,5 +1,6 @@
 import type {
   Condition,
+  Feature,
   FeatureMatrix,
   MarketSessionConfig,
   OHLCVBar,
@@ -10,13 +11,23 @@ export type SimulationEntryMode =
   | "next-open"
   | "signal-close"
   | "box-boundary-limit";
-export type SimulationStopMode = "fixed-percent" | "atr-multiple";
+export type SimulationStopMode =
+  | "fixed-percent"
+  | "atr-multiple"
+  | "price-level";
 export type SimulationTargetMode =
   | "fixed-percent"
   | "risk-multiple"
   | "atr-multiple"
   | "time-only"
-  | "box-midpoint";
+  | "box-midpoint"
+  | "price-level"
+  | "feature-event"
+  | "signal-invalidation";
+export type SimulationFeatureExitOperator =
+  | "eq"
+  | "cross-above"
+  | "cross-below";
 
 export interface CandidateSimulationConfig {
   entryMode: SimulationEntryMode;
@@ -24,10 +35,21 @@ export interface CandidateSimulationConfig {
   stopMode: SimulationStopMode;
   stopPct: number;
   stopAtrMultiple: number;
+  /** Execution-only price-level series, frozen at the signal decision time. */
+  stopFeatureId?: string;
+  stopFeatureLabel?: string;
   targetMode: SimulationTargetMode;
   targetPct: number;
   targetAtrMultiple: number;
   rewardRiskMultiple: number;
+  /** Execution-only price-level series, frozen at the signal decision time. */
+  targetFeatureId?: string;
+  targetFeatureLabel?: string;
+  /** Causal post-entry feature event evaluated at each completed bar close. */
+  exitFeatureId?: string;
+  exitFeatureLabel?: string;
+  exitFeatureOperator?: SimulationFeatureExitOperator;
+  exitFeatureValue?: string | number;
   maxHoldBars: number;
   roundTripCostBps: number;
   startingCapital: number;
@@ -43,7 +65,13 @@ export interface SimulatedTrade {
   exitTimestamp: number;
   entryPrice: number;
   exitPrice: number;
-  result: "target" | "stop" | "time" | "ambiguous";
+  result:
+    | "target"
+    | "stop"
+    | "feature-exit"
+    | "invalidation"
+    | "time"
+    | "ambiguous";
   grossReturnPct: number;
   netReturnPct: number;
   pnl: number;
@@ -89,6 +117,64 @@ export const DEFAULT_SIMULATION_CONFIG: CandidateSimulationConfig = {
   nonOverlapping: true,
 };
 
+export interface ExitLevelCandidate {
+  id: string;
+  label: string;
+  source: "target" | "context";
+}
+
+function titleCaseLevelKey(value: string): string {
+  return value
+    .replace(/^custom_/, "")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase())
+    .replace(/\bPds\b/g, "PDS")
+    .replace(/\bVwap\b/g, "VWAP");
+}
+
+/** Lists exact price series available only to execution research. */
+export function listExitLevelCandidates(
+  matrix: FeatureMatrix,
+  features: Feature[] = [],
+): ExitLevelCandidate[] {
+  const namesByPrefix = new Map<string, string>();
+  for (const feature of features) {
+    const custom = feature.id.match(
+      /^(.*custom_[A-Za-z0-9_]+?)_(?:distance|relation|cross|touch|rejection|breakout)/,
+    );
+    if (custom) {
+      const name = feature.definitionName ?? feature.name;
+      namesByPrefix.set(custom[1], name.replace(/^Distance from /, ""));
+    }
+  }
+  return Object.keys(matrix)
+    .filter((key) => key.includes("__exit_level__"))
+    .map((id) => {
+      const [contextPart, raw = id] = id.split("__exit_level__");
+      const rawLabel = raw || id;
+      const customPrefix = rawLabel.startsWith("custom_")
+        ? `${contextPart}custom_${rawLabel.slice("custom_".length)}`
+        : "";
+      const contextFeature = features.find(
+        (feature) =>
+          contextPart.length > 0 && feature.id.startsWith(contextPart),
+      );
+      const context = contextFeature?.name.match(/^\[[^\]]+\]/)?.[0];
+      const base =
+        namesByPrefix.get(customPrefix) ?? titleCaseLevelKey(rawLabel);
+      return {
+        id,
+        label: context ? `${context} ${base}` : base,
+        source: contextPart ? ("context" as const) : ("target" as const),
+      };
+    })
+    .filter(
+      (candidate, index, all) =>
+        all.findIndex((other) => other.id === candidate.id) === index,
+    )
+    .sort((left, right) => left.label.localeCompare(right.label));
+}
+
 function conditionMatches(
   condition: Condition,
   value: number | string | undefined,
@@ -130,6 +216,40 @@ function numericAt(
 ): number | null {
   const value = matrix[key]?.[index];
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function featureExitMatches(
+  config: CandidateSimulationConfig,
+  matrix: FeatureMatrix,
+  index: number,
+): boolean {
+  const featureId = config.exitFeatureId;
+  const operator = config.exitFeatureOperator;
+  const expected = config.exitFeatureValue;
+  if (!featureId || !operator || expected == null) return false;
+  const current = matrix[featureId]?.[index];
+  if (current == null) return false;
+  if (operator === "eq") {
+    const previous = matrix[featureId]?.[index - 1];
+    return typeof current === "number"
+      ? current === Number(expected) && previous !== Number(expected)
+      : current === String(expected) && previous !== String(expected);
+  }
+  const previous = matrix[featureId]?.[index - 1];
+  const currentNumber = typeof current === "number" ? current : Number(current);
+  const previousNumber =
+    typeof previous === "number" ? previous : Number(previous);
+  const threshold = Number(expected);
+  if (
+    !Number.isFinite(currentNumber) ||
+    !Number.isFinite(previousNumber) ||
+    !Number.isFinite(threshold)
+  ) {
+    return false;
+  }
+  return operator === "cross-above"
+    ? previousNumber <= threshold && currentNumber > threshold
+    : previousNumber >= threshold && currentNumber < threshold;
 }
 
 function marketDateKey(
@@ -249,12 +369,32 @@ export function simulateCandidateSystem(input: {
     const entryAtr = Number.isFinite(atr[entryIndex])
       ? atr[entryIndex]
       : Math.abs(entryPrice) * (Math.max(0.001, config.stopPct) / 100);
-    const stopPct =
-      (config.stopMode ?? "fixed-percent") === "atr-multiple"
+    const stopMode = config.stopMode ?? "fixed-percent";
+    let stopPct =
+      stopMode === "atr-multiple"
         ? (entryAtr * Math.max(0.1, config.stopAtrMultiple ?? 1) * 100) /
           Math.abs(entryPrice)
         : Math.max(0.001, config.stopPct);
-    const stopPrice = entryPrice * (1 - (direction * stopPct) / 100);
+    let stopPrice = entryPrice * (1 - (direction * stopPct) / 100);
+    if (stopMode === "price-level") {
+      const level = config.stopFeatureId
+        ? numericAt(matrix, config.stopFeatureId, signalIndex)
+        : null;
+      if (
+        level == null ||
+        (direction > 0 && level >= entryPrice) ||
+        (direction < 0 && level <= entryPrice)
+      ) {
+        skippedUnfilled++;
+        continue;
+      }
+      stopPrice = level;
+      stopPct = (Math.abs(entryPrice - stopPrice) / Math.abs(entryPrice)) * 100;
+      if (stopPct < 0.001) {
+        skippedUnfilled++;
+        continue;
+      }
+    }
     let targetPrice =
       config.targetMode === "risk-multiple"
         ? entryPrice *
@@ -270,6 +410,25 @@ export function simulateCandidateSystem(input: {
     } else if (config.targetMode === "time-only") {
       targetPrice =
         direction > 0 ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY;
+    } else if (
+      config.targetMode === "feature-event" ||
+      config.targetMode === "signal-invalidation"
+    ) {
+      targetPrice =
+        direction > 0 ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY;
+    } else if (config.targetMode === "price-level") {
+      const level = config.targetFeatureId
+        ? numericAt(matrix, config.targetFeatureId, signalIndex)
+        : null;
+      if (
+        level == null ||
+        (direction > 0 && level <= entryPrice) ||
+        (direction < 0 && level >= entryPrice)
+      ) {
+        skippedUnfilled++;
+        continue;
+      }
+      targetPrice = level;
     }
     if (config.targetMode === "box-midpoint") {
       const midpoint = numericAt(matrix, "__adjusted_pds_mid", signalIndex);
@@ -316,6 +475,24 @@ export function simulateCandidateSystem(input: {
         result = stopTouched ? "stop" : "target";
         exitIndex = index;
         exitPrice = stopTouched ? stopPrice : targetPrice;
+        break;
+      }
+      if (
+        config.targetMode === "feature-event" &&
+        featureExitMatches(config, matrix, index)
+      ) {
+        result = "feature-exit";
+        exitIndex = index;
+        exitPrice = bars[index].close;
+        break;
+      }
+      if (
+        config.targetMode === "signal-invalidation" &&
+        !matchesPattern(pattern, matrix, index)
+      ) {
+        result = "invalidation";
+        exitIndex = index;
+        exitPrice = bars[index].close;
         break;
       }
     }

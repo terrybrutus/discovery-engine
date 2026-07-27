@@ -363,7 +363,7 @@ export function PatternDetailModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         data-ocid="pattern_detail_modal"
-        className="sm:max-w-2xl max-h-[90vh] overflow-y-auto"
+        className="h-[100dvh] max-h-[100dvh] w-screen max-w-none rounded-none border-0 p-4 sm:h-auto sm:max-h-[90dvh] sm:max-w-2xl sm:rounded-lg sm:border sm:p-6"
       >
         <DialogHeader>
           <DialogTitle className="font-display text-lg pr-8 leading-snug">

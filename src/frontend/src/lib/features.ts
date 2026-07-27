@@ -878,6 +878,30 @@ export function computeFeatureValues(
 ): FeatureMatrix {
   const matrix: FeatureMatrix = {};
   for (const feat of features) matrix[feat.id] = new Array(bars.length);
+  // Exact causal price levels are execution metadata, not searchable
+  // discovery features. Keeping them outside the Feature catalog prevents
+  // absolute-price threshold mining while allowing the system optimizer to
+  // test whether a discovered entry should exit at VWAP, a band, a pivot,
+  // an opening/session level, or another uploaded price series.
+  for (const key of [
+    "__exit_level__previous_day_high",
+    "__exit_level__previous_day_low",
+    "__exit_level__previous_day_midpoint",
+    "__exit_level__opening_range_high",
+    "__exit_level__opening_range_low",
+    "__exit_level__opening_range_midpoint",
+    "__exit_level__vwap",
+    "__exit_level__bollinger_upper_20_2",
+    "__exit_level__bollinger_basis_20",
+    "__exit_level__bollinger_lower_20_2",
+    "__exit_level__rolling_box_high_20",
+    "__exit_level__rolling_box_low_20",
+    "__exit_level__rolling_box_midpoint_20",
+    "__exit_level__confirmed_swing_high",
+    "__exit_level__confirmed_swing_low",
+  ]) {
+    matrix[key] = new Array(bars.length);
+  }
 
   // Pre-compute per-day aggregates for prev-day location & gap.
   const dayIndex = buildDayIndex(bars, session);
@@ -1126,6 +1150,7 @@ export function computeFeatureValues(
     if (vwap != null) {
       matrix.vwap_distance_pct[i] = ((bar.close - vwap) / vwap) * 100;
       matrix.vwap_side[i] = bar.close >= vwap ? "Above" : "Below";
+      matrix.__exit_level__vwap[i] = vwap;
     }
 
     // ---- Time ----
@@ -1195,6 +1220,9 @@ export function computeFeatureValues(
       matrix.distance_to_pdl_atr[i] =
         currentAtr > 1e-12 ? (bar.close - prev.low) / currentAtr : undefined;
       const previousMidpoint = (prev.high + prev.low) / 2;
+      matrix.__exit_level__previous_day_high[i] = prev.high;
+      matrix.__exit_level__previous_day_low[i] = prev.low;
+      matrix.__exit_level__previous_day_midpoint[i] = previousMidpoint;
       matrix.distance_to_pds_mid_atr[i] =
         currentAtr > 1e-12
           ? (bar.close - previousMidpoint) / currentAtr
@@ -1297,6 +1325,9 @@ export function computeFeatureValues(
         boxLow = Math.min(boxLow, bars[k].low);
       }
       const boxRange = boxHigh - boxLow || 1e-9;
+      matrix.__exit_level__rolling_box_high_20[i] = boxHigh;
+      matrix.__exit_level__rolling_box_low_20[i] = boxLow;
+      matrix.__exit_level__rolling_box_midpoint_20[i] = (boxHigh + boxLow) / 2;
       matrix.box_position[i] = ((bar.close - boxLow) / boxRange) * 100;
       matrix.box_event[i] =
         bar.high > boxHigh && bar.close <= boxHigh
@@ -1332,6 +1363,9 @@ export function computeFeatureValues(
     const orLo = orLowByBar[i];
     const orSize = orSizeByBar[i];
     if (orHi != null && orLo != null) {
+      matrix.__exit_level__opening_range_high[i] = orHi;
+      matrix.__exit_level__opening_range_low[i] = orLo;
+      matrix.__exit_level__opening_range_midpoint[i] = (orHi + orLo) / 2;
       matrix.or_size_pct[i] =
         orSize != null && bar.close > 0 ? (orSize / bar.close) * 100 : 0;
       const brokeUp = bar.high > orHi;
@@ -1353,6 +1387,9 @@ export function computeFeatureValues(
       if (sd != null) {
         const upper = sma20 + 2 * sd;
         const lower = sma20 - 2 * sd;
+        matrix.__exit_level__bollinger_upper_20_2[i] = upper;
+        matrix.__exit_level__bollinger_basis_20[i] = sma20;
+        matrix.__exit_level__bollinger_lower_20_2[i] = lower;
         if (bar.close >= upper) matrix.bb_location[i] = "Above Upper";
         else if (bar.close >= sma20) matrix.bb_location[i] = "Upper Half";
         else if (bar.close >= lower) matrix.bb_location[i] = "Lower Half";
@@ -1378,6 +1415,12 @@ export function computeFeatureValues(
                 : "Normal";
         }
       }
+    }
+    if (lastSwingHigh != null) {
+      matrix.__exit_level__confirmed_swing_high[i] = lastSwingHigh;
+    }
+    if (lastSwingLow != null) {
+      matrix.__exit_level__confirmed_swing_low[i] = lastSwingLow;
     }
 
     // ---- Trend ----

@@ -1,9 +1,12 @@
 import {
   type CandidateSimulationConfig,
   type CandidateSimulationResult,
+  type SimulationFeatureExitOperator,
+  listExitLevelCandidates,
   simulateCandidateSystem,
 } from "@/lib/candidateSimulation";
 import type {
+  Feature,
   FeatureMatrix,
   MarketSessionConfig,
   OHLCVBar,
@@ -78,6 +81,11 @@ export interface CandidateSystemOptimization {
   candidates: OptimizedSystemCandidate[];
   methodology: string[];
   integrityWarning: string;
+  exitSearch: {
+    priceLevelsAvailable: number;
+    indicatorEventsAvailable: number;
+    testedFamilies: string[];
+  };
 }
 
 export const DEFAULT_SYSTEM_OPTIMIZER_CONFIG: SystemOptimizerConfig = {
@@ -119,9 +127,162 @@ function patternSupportsBoxExecution(pattern: Pattern): boolean {
   );
 }
 
+export interface ExitFeatureRule {
+  featureId: string;
+  featureLabel: string;
+  operator: SimulationFeatureExitOperator;
+  value: string | number;
+}
+
+function quantile(values: number[], percentile: number): number {
+  if (values.length === 0) return Number.NaN;
+  const sorted = [...values].sort((left, right) => left - right);
+  const position = (sorted.length - 1) * percentile;
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  if (lower === upper) return sorted[lower];
+  return sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower);
+}
+
+/**
+ * Builds causal indicator/relationship exit rules using development history
+ * only. Categorical event states become close-based exits; stationary or
+ * normalized numeric series become threshold-cross exits. The sealed holdout
+ * never contributes values or thresholds.
+ */
+export function discoverExitFeatureRules(
+  features: Feature[],
+  matrix: FeatureMatrix,
+  developmentEndIndex: number,
+  maximum = 48,
+): ExitFeatureRule[] {
+  const rules: ExitFeatureRule[] = [];
+  const end = Math.max(0, developmentEndIndex);
+  const eventPrimitives = new Set([
+    "cross",
+    "touch",
+    "rejection",
+    "breakout",
+    "failed-breakout",
+    "regime-transition",
+    "divergence",
+    "convergence",
+    "sequence",
+    "direction",
+  ]);
+  const orderedFeatures = [...features].sort((left, right) => {
+    const leftPriority =
+      (left.source === "custom" ? 4 : 0) +
+      (left.primitive === "cross" ||
+      left.primitive === "rejection" ||
+      left.primitive === "divergence"
+        ? 2
+        : 0);
+    const rightPriority =
+      (right.source === "custom" ? 4 : 0) +
+      (right.primitive === "cross" ||
+      right.primitive === "rejection" ||
+      right.primitive === "divergence"
+        ? 2
+        : 0);
+    return rightPriority - leftPriority;
+  });
+  for (const feature of orderedFeatures) {
+    if (
+      !feature.enabled ||
+      feature.category === "Time" ||
+      feature.category === "Calendar"
+    ) {
+      continue;
+    }
+    const series = matrix[feature.id];
+    if (!series) continue;
+    if (
+      feature.type === "categorical" &&
+      (eventPrimitives.has(feature.primitive ?? "") ||
+        feature.source === "custom")
+    ) {
+      const counts = new Map<string, number>();
+      let present = 0;
+      for (let index = 0; index <= end; index++) {
+        const value = series[index];
+        if (typeof value !== "string") continue;
+        present++;
+        counts.set(value, (counts.get(value) ?? 0) + 1);
+      }
+      for (const [value, count] of counts) {
+        if (
+          count < 3 ||
+          count > present * 0.45 ||
+          /^(none|no |off|flat|inside|middle|unchanged)/i.test(value)
+        ) {
+          continue;
+        }
+        rules.push({
+          featureId: feature.id,
+          featureLabel: feature.name,
+          operator: "eq",
+          value,
+        });
+      }
+      continue;
+    }
+    const numericExitCandidate =
+      feature.type === "numeric" &&
+      (feature.source === "custom" ||
+        feature.role === "oscillator" ||
+        feature.role === "percentage" ||
+        feature.primitive === "percentile" ||
+        feature.primitive === "normalized-value");
+    if (!numericExitCandidate) continue;
+    const values: number[] = [];
+    for (let index = 0; index <= end; index++) {
+      const value = series[index];
+      if (typeof value === "number" && Number.isFinite(value)) {
+        values.push(value);
+      }
+    }
+    if (values.length < 30) continue;
+    const thresholds = uniqueNumbers(
+      [0.2, 0.5, 0.8]
+        .map((percentile) => quantile(values, percentile))
+        .filter(Number.isFinite)
+        .map((value) => Number(value.toPrecision(8))),
+    );
+    for (const value of thresholds) {
+      rules.push({
+        featureId: feature.id,
+        featureLabel: feature.name,
+        operator: "cross-above",
+        value,
+      });
+      rules.push({
+        featureId: feature.id,
+        featureLabel: feature.name,
+        operator: "cross-below",
+        value,
+      });
+    }
+  }
+  return rules
+    .filter(
+      (rule, index, all) =>
+        all.findIndex(
+          (other) =>
+            other.featureId === rule.featureId &&
+            other.operator === rule.operator &&
+            other.value === rule.value,
+        ) === index,
+    )
+    .slice(0, Math.max(0, maximum));
+}
+
 function buildConstrainedGrid(
   pattern: Pattern,
   base: CandidateSimulationConfig,
+  matrix: FeatureMatrix,
+  features: Feature[],
+  developmentEndIndex: number,
   maximum: number,
 ): CandidateSimulationConfig[] {
   const box = patternSupportsBoxExecution(pattern);
@@ -142,7 +303,13 @@ function buildConstrainedGrid(
       : []),
   ]);
   const stops: Array<
-    Pick<CandidateSimulationConfig, "stopMode" | "stopPct" | "stopAtrMultiple">
+    Pick<
+      CandidateSimulationConfig,
+      "stopMode" | "stopPct" | "stopAtrMultiple"
+    > &
+      Partial<
+        Pick<CandidateSimulationConfig, "stopFeatureId" | "stopFeatureLabel">
+      >
   > = [
     ...fixedStops.map((stopPct) => ({
       stopMode: "fixed-percent" as const,
@@ -155,6 +322,16 @@ function buildConstrainedGrid(
       stopAtrMultiple,
     })),
   ];
+  const exitLevels = listExitLevelCandidates(matrix, features).slice(0, 24);
+  stops.push(
+    ...exitLevels.map((level) => ({
+      stopMode: "price-level" as const,
+      stopPct: base.stopPct,
+      stopAtrMultiple: base.stopAtrMultiple ?? 1,
+      stopFeatureId: level.id,
+      stopFeatureLabel: level.label,
+    })),
+  );
   const holds = uniqueNumbers([
     1,
     2,
@@ -168,10 +345,8 @@ function buildConstrainedGrid(
     pattern.horizonAnalysis?.recommendedHorizon ?? pattern.horizon,
   ]).filter((hold) => hold > 0 && hold <= 100);
   const targets: Array<
-    Pick<
-      CandidateSimulationConfig,
-      "targetMode" | "targetPct" | "rewardRiskMultiple" | "targetAtrMultiple"
-    >
+    Pick<CandidateSimulationConfig, "targetMode"> &
+      Partial<CandidateSimulationConfig>
   > = [
     ...[1, 1.5, 2, 3].map((rewardRiskMultiple) => ({
       targetMode: "risk-multiple" as const,
@@ -216,7 +391,43 @@ function buildConstrainedGrid(
         ]
       : []),
   ];
-  const grid: CandidateSimulationConfig[] = [];
+  targets.push(
+    ...exitLevels.map((level) => ({
+      targetMode: "price-level" as const,
+      targetPct: base.targetPct,
+      rewardRiskMultiple: base.rewardRiskMultiple,
+      targetAtrMultiple: base.targetAtrMultiple ?? 2,
+      targetFeatureId: level.id,
+      targetFeatureLabel: level.label,
+    })),
+  );
+  const exitFeatureRules = discoverExitFeatureRules(
+    features,
+    matrix,
+    developmentEndIndex,
+  );
+  targets.push(
+    ...exitFeatureRules.map((rule) => ({
+      targetMode: "feature-event" as const,
+      targetPct: base.targetPct,
+      rewardRiskMultiple: base.rewardRiskMultiple,
+      targetAtrMultiple: base.targetAtrMultiple ?? 2,
+      exitFeatureId: rule.featureId,
+      exitFeatureLabel: rule.featureLabel,
+      exitFeatureOperator: rule.operator,
+      exitFeatureValue: rule.value,
+    })),
+    {
+      targetMode: "signal-invalidation" as const,
+      targetPct: base.targetPct,
+      rewardRiskMultiple: base.rewardRiskMultiple,
+      targetAtrMultiple: base.targetAtrMultiple ?? 2,
+    },
+  );
+  const groups = new Map<string, CandidateSimulationConfig[]>();
+  const addToGroup = (name: string, config: CandidateSimulationConfig) => {
+    groups.set(name, [...(groups.get(name) ?? []), config]);
+  };
   for (const hold of holds) {
     for (const stop of stops) {
       for (const target of targets) {
@@ -227,7 +438,14 @@ function buildConstrainedGrid(
           ) {
             continue;
           }
-          grid.push({
+          if (
+            stop.stopMode === "price-level" &&
+            target.targetMode === "price-level" &&
+            stop.stopFeatureId === target.targetFeatureId
+          ) {
+            continue;
+          }
+          const config = {
             ...base,
             ...target,
             ...stop,
@@ -235,18 +453,45 @@ function buildConstrainedGrid(
             maxHoldBars: hold,
             entryExpiryBars: Math.max(1, Math.min(8, hold)),
             nonOverlapping: true,
-          });
+          } as CandidateSimulationConfig;
+          const family =
+            target.targetMode === "price-level"
+              ? "price-target"
+              : stop.stopMode === "price-level"
+                ? "price-stop"
+                : target.targetMode === "feature-event" ||
+                    target.targetMode === "signal-invalidation"
+                  ? "feature-exit"
+                  : "standard";
+          addToGroup(family, config);
         }
       }
     }
   }
+  const grid = [...groups.values()].flat();
   if (grid.length <= maximum) return grid;
   const selected: CandidateSimulationConfig[] = [];
-  const stride = grid.length / maximum;
-  for (let index = 0; index < maximum; index++) {
-    selected.push(grid[Math.floor(index * stride)]);
+  const nonEmptyGroups = [...groups.values()].filter(
+    (group) => group.length > 0,
+  );
+  const quota = Math.max(1, Math.floor(maximum / nonEmptyGroups.length));
+  for (const group of nonEmptyGroups) {
+    const count = Math.min(quota, group.length);
+    const stride = group.length / count;
+    for (let index = 0; index < count; index++) {
+      selected.push(group[Math.floor(index * stride)]);
+    }
   }
-  return selected;
+  if (selected.length < maximum) {
+    const chosen = new Set(selected);
+    const remaining = grid.filter((candidate) => !chosen.has(candidate));
+    const count = Math.min(maximum - selected.length, remaining.length);
+    const stride = remaining.length / Math.max(1, count);
+    for (let index = 0; index < count; index++) {
+      selected.push(remaining[Math.floor(index * stride)]);
+    }
+  }
+  return selected.slice(0, maximum);
 }
 
 function complexityPenalty(config: CandidateSimulationConfig): number {
@@ -255,7 +500,11 @@ function complexityPenalty(config: CandidateSimulationConfig): number {
   if (config.targetMode === "box-midpoint") penalty += 0.04;
   if (config.targetMode === "time-only") penalty -= 0.03;
   if ((config.stopMode ?? "fixed-percent") === "atr-multiple") penalty += 0.02;
+  if ((config.stopMode ?? "fixed-percent") === "price-level") penalty += 0.03;
   if (config.targetMode === "atr-multiple") penalty += 0.02;
+  if (config.targetMode === "price-level") penalty += 0.03;
+  if (config.targetMode === "feature-event") penalty += 0.05;
+  if (config.targetMode === "signal-invalidation") penalty += 0.02;
   if (config.maxHoldBars > 21) penalty += 0.04;
   return penalty;
 }
@@ -354,13 +603,30 @@ function plainExit(config: CandidateSimulationConfig): string {
     return `Take profit ${config.targetAtrMultiple} ATR from entry.`;
   if (config.targetMode === "time-only")
     return "Do not use a fixed profit target; exit when the maximum hold ends.";
+  if (config.targetMode === "price-level")
+    return `Take profit at the signal candle's confirmed ${config.targetFeatureLabel ?? config.targetFeatureId ?? "selected causal price level"} value.`;
+  if (config.targetMode === "feature-event") {
+    const operator =
+      config.exitFeatureOperator === "cross-above"
+        ? "crosses above"
+        : config.exitFeatureOperator === "cross-below"
+          ? "crosses below"
+          : "is";
+    return `Exit when ${config.exitFeatureLabel ?? config.exitFeatureId ?? "the selected indicator"} ${operator} ${String(config.exitFeatureValue ?? "its trigger")}, using that candle's close.`;
+  }
+  if (config.targetMode === "signal-invalidation")
+    return "Exit at the candle close when the entry pattern is no longer true.";
   return `Take profit at ${config.rewardRiskMultiple}:1 reward compared with the stop.`;
 }
 
 function plainStop(config: CandidateSimulationConfig): string {
-  return (config.stopMode ?? "fixed-percent") === "atr-multiple"
-    ? `Use a ${config.stopAtrMultiple} ATR protective stop.`
-    : `Use a ${config.stopPct}% stop.`;
+  if ((config.stopMode ?? "fixed-percent") === "atr-multiple") {
+    return `Use a ${config.stopAtrMultiple} ATR protective stop.`;
+  }
+  if ((config.stopMode ?? "fixed-percent") === "price-level") {
+    return `Place the protective stop at the signal candle's confirmed ${config.stopFeatureLabel ?? config.stopFeatureId ?? "selected causal price level"} value.`;
+  }
+  return `Use a ${config.stopPct}% stop.`;
 }
 
 function buildRecipe(
@@ -438,6 +704,7 @@ export function optimizeCandidateSystem(input: {
   pattern: Pattern;
   bars: OHLCVBar[];
   matrix: FeatureMatrix;
+  features?: Feature[];
   session: MarketSessionConfig;
   baseConfig: CandidateSimulationConfig;
   optimizerConfig?: Partial<SystemOptimizerConfig>;
@@ -458,6 +725,9 @@ export function optimizeCandidateSystem(input: {
   const grid = buildConstrainedGrid(
     input.pattern,
     input.baseConfig,
+    input.matrix,
+    input.features ?? [],
+    preHoldoutEndIndex,
     Math.max(20, settings.maxCandidates),
   );
   const developmentEvaluations = grid.map((config, index) => {
@@ -571,7 +841,9 @@ export function optimizeCandidateSystem(input: {
     recommendedCandidateId: recommended?.id ?? null,
     candidates,
     methodology: [
-      "The parameter grid is deliberately constrained: common and observed-path fixed levels, ATR-scaled exits, time-only exits, normal entries, and bounded hold lengths.",
+      "The parameter grid is deliberately constrained: fixed and ATR risk, reward:risk, bounded holds, exact causal price levels, indicator/relationship events, pattern invalidation, and available session-box execution.",
+      "Indicator thresholds and eligible event states are derived only from development history; the sealed final segment cannot define an exit.",
+      "Absolute indicator prices are never mined as entry conditions. They are retained separately only so a discovered entry can test an exact executable stop or target.",
       "Candidates are ranked before the sealed final segment is opened.",
       "Walk-forward folds must be profitable in at least 75% of chronological test windows.",
       `The final holdout must contain at least ${settings.minHoldoutTrades} trades, at least ${settings.minHoldoutExpectancyR.toFixed(2)}R expectancy, and profit factor of at least ${settings.minHoldoutProfitFactor.toFixed(2)}.`,
@@ -581,5 +853,28 @@ export function optimizeCandidateSystem(input: {
     ],
     integrityWarning:
       "This final segment was sealed from execution-parameter selection, but the underlying pattern may have been discovered using the full uploaded history. Lock this recipe and test it on a later CSV before treating it as truly untouched future evidence.",
+    exitSearch: {
+      priceLevelsAvailable: listExitLevelCandidates(
+        input.matrix,
+        input.features ?? [],
+      ).length,
+      indicatorEventsAvailable: discoverExitFeatureRules(
+        input.features ?? [],
+        input.matrix,
+        preHoldoutEndIndex,
+      ).length,
+      testedFamilies: [
+        "fixed percentage",
+        "ATR",
+        "reward:risk",
+        "time",
+        "causal price level",
+        "indicator/relationship event",
+        "signal invalidation",
+        ...(patternSupportsBoxExecution(input.pattern)
+          ? ["adjusted session box"]
+          : []),
+      ],
+    },
   };
 }

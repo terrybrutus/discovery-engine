@@ -146,6 +146,7 @@ export function SystemRecommendationPanel({
           pattern,
           bars: target.bars,
           matrix: space.matrix,
+          features: space.features,
           session,
           baseConfig: baseSimulationConfig(pattern, roundTripCostBps),
           optimizerConfig: DEFAULT_SYSTEM_OPTIMIZER_CONFIG,
@@ -180,8 +181,9 @@ export function SystemRecommendationPanel({
           </h3>
           <p className="mt-1 max-w-3xl text-xs leading-relaxed text-muted-foreground">
             Tests the strongest {shortlist.length} non-degraded discoveries with
-            costs, non-overlapping trades, walk-forward folds, and a sealed
-            final segment. It recommends nothing when nothing survives.
+            fixed, ATR, structural-price, and indicator-event exits, plus costs,
+            non-overlapping trades, walk-forward folds, and a sealed final
+            segment. It recommends nothing when nothing survives.
           </p>
         </div>
         <Button disabled={running || shortlist.length === 0} onClick={run}>

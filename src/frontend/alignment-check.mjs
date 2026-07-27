@@ -314,6 +314,270 @@ range = ta.atr(length) * multiplier`,
   if (strictOptimizerResult.recommendedCandidateId !== null) {
     throw new Error("Strict system safeguard regression failed.");
   }
+
+  // Planned-outcome exit-discovery control. The planted target changes
+  // between 0.35% and 0.75%, so no one fixed-percent target reproduces it.
+  // Every signal touches its causal target before reversing toward the stop;
+  // the optimizer should therefore recover the uploaded level as the robust
+  // exit rule without seeing the sealed final segment during selection.
+  const exitBars = [];
+  const exitSignals = [];
+  const adaptiveTarget = [];
+  for (let index = 0; index < 900; index++) {
+    const signal = index % 6 === 0 && index < 894;
+    const followsSignal = index > 0 && (index - 1) % 6 === 0;
+    const targetDistance = Math.floor(index / 6) % 2 === 0 ? 0.35 : 0.75;
+    exitSignals.push(signal ? "Yes" : "No");
+    adaptiveTarget.push(signal ? 100 + targetDistance : undefined);
+    exitBars.push({
+      timestamp: Date.parse("2024-01-01T00:00:00Z") + index * 60_000,
+      open: 100,
+      high: followsSignal ? 100 + targetDistance + 0.02 : 100.04,
+      low: followsSignal ? 99.82 : index % 6 === 2 ? 99.7 : 99.96,
+      close: followsSignal ? 99.95 : 100,
+      volume: 1000,
+    });
+  }
+  const exitPattern = {
+    ...optimizerPattern,
+    id: "planned-adaptive-exit",
+    label: "When Planned Signal is Yes, close tends to rise",
+    conditions: [
+      { featureId: "planned_signal", operator: "eq", bucketLabel: "Yes" },
+    ],
+  };
+  const exitOptimization = optimizeCandidateSystem({
+    pattern: exitPattern,
+    bars: exitBars,
+    matrix: {
+      planned_signal: exitSignals,
+      __exit_level__planned_adaptive_target: adaptiveTarget,
+    },
+    session: {
+      timeZone: "UTC",
+      regularOpenMinutes: 0,
+      regularCloseMinutes: 1440,
+      openingRangeMinutes: 30,
+      tradingDayStartMinutes: 0,
+    },
+    baseConfig: {
+      entryMode: "next-open",
+      entryExpiryBars: 1,
+      stopMode: "fixed-percent",
+      stopPct: 0.25,
+      stopAtrMultiple: 1,
+      targetMode: "fixed-percent",
+      targetPct: 0.25,
+      targetAtrMultiple: 2,
+      rewardRiskMultiple: 1,
+      maxHoldBars: 3,
+      roundTripCostBps: 0,
+      startingCapital: 50_000,
+      riskPerTradePct: 1,
+      nonOverlapping: true,
+    },
+    optimizerConfig: {
+      minDevelopmentTrades: 50,
+      minHoldoutTrades: 20,
+      maxCandidates: 360,
+    },
+  });
+  const adaptiveRecommendation = exitOptimization.candidates.find(
+    (candidate) => candidate.id === exitOptimization.recommendedCandidateId,
+  );
+  if (
+    !adaptiveRecommendation ||
+    adaptiveRecommendation.config.targetMode !== "price-level" ||
+    adaptiveRecommendation.config.targetFeatureId !==
+      "__exit_level__planned_adaptive_target" ||
+    exitOptimization.exitSearch.priceLevelsAvailable !== 1
+  ) {
+    throw new Error(
+      `Planned adaptive exit was not recovered: ${JSON.stringify({
+        recommended: adaptiveRecommendation?.config,
+        levelCandidates: exitOptimization.candidates
+          .filter((candidate) => candidate.config.targetMode === "price-level")
+          .map((candidate) => ({
+            config: candidate.config,
+            expectancy: candidate.development.expectancyR,
+            trades: candidate.development.trades.length,
+          })),
+        exitSearch: exitOptimization.exitSearch,
+      })}`,
+    );
+  }
+  const eventBars = [];
+  const eventSignals = [];
+  const exitEvents = [];
+  for (let index = 0; index < 1050; index++) {
+    const cycle = index % 7;
+    const signal = cycle === 0 && index < 1043;
+    const event = cycle === 2;
+    const favorableClose = Math.floor(index / 7) % 2 === 0 ? 100.45 : 100.85;
+    eventSignals.push(signal ? "Yes" : "No");
+    exitEvents.push(event ? "Momentum reversed" : "None");
+    eventBars.push({
+      timestamp: Date.parse("2024-01-01T00:00:00Z") + index * 60_000,
+      open: 100,
+      high: event ? favorableClose + 0.01 : cycle === 1 ? 100.2 : 100.04,
+      low: cycle === 3 ? 99.65 : 99.9,
+      close: event ? favorableClose : 100,
+      volume: 1000,
+    });
+  }
+  const eventOptimization = optimizeCandidateSystem({
+    pattern: {
+      ...optimizerPattern,
+      id: "planned-indicator-exit",
+      label: "When Planned Signal is Yes, close tends to rise",
+      conditions: [
+        { featureId: "event_signal", operator: "eq", bucketLabel: "Yes" },
+      ],
+    },
+    bars: eventBars,
+    matrix: {
+      event_signal: eventSignals,
+      momentum_reversal: exitEvents,
+    },
+    features: [
+      {
+        id: "momentum_reversal",
+        name: "Momentum Reversal",
+        category: "Imported Signals",
+        description: "Planted post-entry reversal event.",
+        type: "categorical",
+        enabled: true,
+        source: "custom",
+        primitive: "cross",
+      },
+    ],
+    session: {
+      timeZone: "UTC",
+      regularOpenMinutes: 0,
+      regularCloseMinutes: 1440,
+      openingRangeMinutes: 30,
+      tradingDayStartMinutes: 0,
+    },
+    baseConfig: {
+      entryMode: "next-open",
+      entryExpiryBars: 1,
+      stopMode: "fixed-percent",
+      stopPct: 0.25,
+      stopAtrMultiple: 1,
+      targetMode: "fixed-percent",
+      targetPct: 0.25,
+      targetAtrMultiple: 2,
+      rewardRiskMultiple: 1,
+      maxHoldBars: 3,
+      roundTripCostBps: 0,
+      startingCapital: 50_000,
+      riskPerTradePct: 1,
+      nonOverlapping: true,
+    },
+    optimizerConfig: {
+      minDevelopmentTrades: 50,
+      minHoldoutTrades: 20,
+      maxCandidates: 360,
+    },
+  });
+  const eventRecommendation = eventOptimization.candidates.find(
+    (candidate) => candidate.id === eventOptimization.recommendedCandidateId,
+  );
+  if (
+    !eventRecommendation ||
+    eventRecommendation.config.targetMode !== "feature-event" ||
+    eventRecommendation.config.exitFeatureId !== "momentum_reversal" ||
+    eventRecommendation.config.exitFeatureValue !== "Momentum reversed" ||
+    eventOptimization.exitSearch.indicatorEventsAvailable < 1
+  ) {
+    throw new Error(
+      `Planned indicator exit was not recovered: ${JSON.stringify({
+        recommended: eventRecommendation?.config,
+        exitSearch: eventOptimization.exitSearch,
+      })}`,
+    );
+  }
+  const stopBars = [];
+  const stopSignals = [];
+  const adaptiveStop = [];
+  for (let index = 0; index < 960; index++) {
+    const cycle = Math.floor(index / 8);
+    const offset = index % 8;
+    const signal = offset === 0 && index < 952;
+    const execution = offset === 1;
+    const stopDistance = cycle % 2 === 0 ? 0.2 : 0.6;
+    const winner = cycle % 4 !== 3;
+    const stop = 100 - stopDistance;
+    stopSignals.push(signal ? "Yes" : "No");
+    adaptiveStop.push(signal ? stop : undefined);
+    stopBars.push({
+      timestamp: Date.parse("2024-01-01T00:00:00Z") + index * 60_000,
+      open: 100,
+      high: execution ? (winner ? 100.55 : 100.1) : 100.04,
+      low: execution ? (winner ? stop + 0.02 : stop - 0.02) : 99.96,
+      close: execution ? (winner ? 100.3 : stop - 0.01) : 100,
+      volume: 1000,
+    });
+  }
+  const stopOptimization = optimizeCandidateSystem({
+    pattern: {
+      ...optimizerPattern,
+      id: "planned-adaptive-stop",
+      label: "When Planned Signal is Yes, close tends to rise",
+      conditions: [
+        { featureId: "stop_signal", operator: "eq", bucketLabel: "Yes" },
+      ],
+    },
+    bars: stopBars,
+    matrix: {
+      stop_signal: stopSignals,
+      __exit_level__planned_adaptive_stop: adaptiveStop,
+    },
+    session: {
+      timeZone: "UTC",
+      regularOpenMinutes: 0,
+      regularCloseMinutes: 1440,
+      openingRangeMinutes: 30,
+      tradingDayStartMinutes: 0,
+    },
+    baseConfig: {
+      entryMode: "next-open",
+      entryExpiryBars: 1,
+      stopMode: "fixed-percent",
+      stopPct: 0.25,
+      stopAtrMultiple: 1,
+      targetMode: "fixed-percent",
+      targetPct: 0.5,
+      targetAtrMultiple: 2,
+      rewardRiskMultiple: 2,
+      maxHoldBars: 3,
+      roundTripCostBps: 0,
+      startingCapital: 50_000,
+      riskPerTradePct: 1,
+      nonOverlapping: true,
+    },
+    optimizerConfig: {
+      minDevelopmentTrades: 50,
+      minHoldoutTrades: 20,
+      maxCandidates: 360,
+    },
+  });
+  const stopRecommendation = stopOptimization.candidates.find(
+    (candidate) => candidate.id === stopOptimization.recommendedCandidateId,
+  );
+  if (
+    !stopRecommendation ||
+    stopRecommendation.config.stopMode !== "price-level" ||
+    stopRecommendation.config.stopFeatureId !==
+      "__exit_level__planned_adaptive_stop"
+  ) {
+    throw new Error(
+      `Planned adaptive stop was not recovered: ${JSON.stringify({
+        recommended: stopRecommendation?.config,
+        exitSearch: stopOptimization.exitSearch,
+      })}`,
+    );
+  }
   const parse = (name, minutes, rows = 10) => {
     const result = parseCsv(
       makeCsv("2026-01-05T09:30:00Z", minutes, rows),
@@ -961,6 +1225,10 @@ range = ta.atr(length) * multiplier`,
         optimizerWalkForward: `${optimizerRecommendation.walkForward.profitableFolds}/${optimizerRecommendation.walkForward.folds}`,
         optimizerHoldoutTrades:
           optimizerRecommendation.sealedHoldout.trades.length,
+        plannedPriceExitRecovered:
+          adaptiveRecommendation.config.targetFeatureLabel,
+        plannedStopRecovered: stopRecommendation.config.stopFeatureLabel,
+        plannedIndicatorExitRecovered: `${eventRecommendation.config.exitFeatureLabel} = ${eventRecommendation.config.exitFeatureValue}`,
       },
       null,
       2,

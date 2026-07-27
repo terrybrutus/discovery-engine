@@ -225,7 +225,7 @@ export function PatternResultsTable({
   return (
     <div
       data-ocid="pattern_results_table"
-      className="relative overflow-auto rounded-lg border border-border bg-card max-h-[calc(100vh-22rem)]"
+      className="relative max-h-none overflow-x-auto overflow-y-visible rounded-lg border border-border bg-card md:max-h-[calc(100dvh-22rem)] md:overflow-auto"
     >
       <Table className="text-sm">
         <TableHeader className="sticky top-0 z-10 bg-card shadow-subtle">

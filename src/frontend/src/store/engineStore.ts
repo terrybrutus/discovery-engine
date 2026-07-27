@@ -489,6 +489,39 @@ export function buildDatasetFeatures(
     const values = computed[key];
     if (values) informativeMatrix[key] = values;
   }
+  for (const [key, values] of Object.entries(computed)) {
+    if (key.startsWith("__exit_level__")) informativeMatrix[key] = values;
+  }
+  // Preserve exact uploaded price/band/basis series strictly as execution
+  // metadata. Discovery continues to receive only their normalized
+  // relationships, while exit discovery can test the actual causal line.
+  for (const column of dataset.columns) {
+    const definition = semantic.definitions[column.key];
+    const values = dataset.columnValues?.[column.key];
+    if (
+      values &&
+      definition &&
+      ["price-level", "upper-band", "lower-band", "basis"].includes(
+        definition.role,
+      )
+    ) {
+      // Reuse the uploaded numeric array instead of cloning it; numericAt()
+      // already rejects missing/NaN values during execution.
+      informativeMatrix[`__exit_level__custom_${column.key}`] = values;
+    }
+  }
+  if (informativeMatrix.__adjusted_pds_high) {
+    informativeMatrix.__exit_level__adjusted_pds_high =
+      informativeMatrix.__adjusted_pds_high;
+  }
+  if (informativeMatrix.__adjusted_pds_low) {
+    informativeMatrix.__exit_level__adjusted_pds_low =
+      informativeMatrix.__adjusted_pds_low;
+  }
+  if (informativeMatrix.__adjusted_pds_mid) {
+    informativeMatrix.__exit_level__adjusted_pds_midpoint =
+      informativeMatrix.__adjusted_pds_mid;
+  }
   return {
     features: deduplicated,
     matrix: informativeMatrix,

@@ -5,6 +5,7 @@ import { Label } from "@/components/ui/label";
 import {
   type CandidateSimulationConfig,
   DEFAULT_SIMULATION_CONFIG,
+  listExitLevelCandidates,
   simulateCandidateSystem,
 } from "@/lib/candidateSimulation";
 import {
@@ -140,6 +141,16 @@ export function CandidateSystemSimulator({ pattern }: { pattern: Pattern }) {
       session,
     });
   }, [config, pattern, research, resultRequested, session]);
+  const exitLevels = useMemo(
+    () =>
+      research
+        ? listExitLevelCandidates(
+            research.space.matrix,
+            research.space.features,
+          )
+        : [],
+    [research],
+  );
 
   if (!expanded) {
     return (
@@ -210,6 +221,9 @@ export function CandidateSystemSimulator({ pattern }: { pattern: Pattern }) {
               >
                 <option value="fixed-percent">Fixed protective %</option>
                 <option value="atr-multiple">ATR-based protective stop</option>
+                <option value="price-level">
+                  Uploaded/structural price level
+                </option>
               </select>
             </div>
             <div className="space-y-1.5">
@@ -229,6 +243,9 @@ export function CandidateSystemSimulator({ pattern }: { pattern: Pattern }) {
                 <option value="atr-multiple">ATR-based target</option>
                 <option value="time-only">Time exit only</option>
                 <option value="box-midpoint">Adjusted box midpoint</option>
+                <option value="price-level">
+                  Uploaded/structural price level
+                </option>
               </select>
             </div>
             {(config.stopMode ?? "fixed-percent") === "atr-multiple" ? (
@@ -238,6 +255,30 @@ export function CandidateSystemSimulator({ pattern }: { pattern: Pattern }) {
                 step={0.1}
                 onChange={(stopAtrMultiple) => patch({ stopAtrMultiple })}
               />
+            ) : (config.stopMode ?? "fixed-percent") === "price-level" ? (
+              <div className="space-y-1.5">
+                <Label>Stop price level</Label>
+                <select
+                  className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  value={config.stopFeatureId ?? ""}
+                  onChange={(event) => {
+                    const selected = exitLevels.find(
+                      (level) => level.id === event.target.value,
+                    );
+                    patch({
+                      stopFeatureId: selected?.id,
+                      stopFeatureLabel: selected?.label,
+                    });
+                  }}
+                >
+                  <option value="">Choose an available level</option>
+                  {exitLevels.map((level) => (
+                    <option key={level.id} value={level.id}>
+                      {level.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
             ) : (
               <NumericField
                 label="Stop distance %"
@@ -267,6 +308,30 @@ export function CandidateSystemSimulator({ pattern }: { pattern: Pattern }) {
                 step={0.1}
                 onChange={(targetAtrMultiple) => patch({ targetAtrMultiple })}
               />
+            ) : config.targetMode === "price-level" ? (
+              <div className="space-y-1.5">
+                <Label>Target price level</Label>
+                <select
+                  className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  value={config.targetFeatureId ?? ""}
+                  onChange={(event) => {
+                    const selected = exitLevels.find(
+                      (level) => level.id === event.target.value,
+                    );
+                    patch({
+                      targetFeatureId: selected?.id,
+                      targetFeatureLabel: selected?.label,
+                    });
+                  }}
+                >
+                  <option value="">Choose an available level</option>
+                  {exitLevels.map((level) => (
+                    <option key={level.id} value={level.id}>
+                      {level.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
             ) : config.targetMode === "time-only" ? (
               <div className="rounded border border-border bg-background p-3 text-xs text-muted-foreground">
                 No profit target. The protective stop remains active and any
@@ -320,6 +385,14 @@ export function CandidateSystemSimulator({ pattern }: { pattern: Pattern }) {
             />
             One position at a time; ignore signals until the active trade exits
           </label>
+          {(config.stopMode === "price-level" ||
+            config.targetMode === "price-level") && (
+            <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+              Price-level rules use the last confirmed value available when the
+              signal candle closes. They are frozen for that trade, so a moving
+              line cannot rewrite an earlier decision.
+            </p>
+          )}
 
           <div className="mt-4 flex flex-wrap items-center gap-2">
             <Button onClick={() => setResultRequested(true)}>
@@ -414,6 +487,7 @@ export function CandidateSystemSimulator({ pattern }: { pattern: Pattern }) {
                         pattern,
                         bars: research.target.bars,
                         matrix: research.space.matrix,
+                        features: research.space.features,
                         session,
                         baseConfig: {
                           ...config,
@@ -537,6 +611,20 @@ export function CandidateSystemSimulator({ pattern }: { pattern: Pattern }) {
 
             {optimization ? (
               <>
+                {optimization.exitSearch ? (
+                  <div className="mt-4 rounded border border-border bg-background/70 p-3 text-xs leading-relaxed text-muted-foreground">
+                    Exit discovery examined{" "}
+                    <span className="font-mono text-foreground">
+                      {optimization.exitSearch.priceLevelsAvailable}
+                    </span>{" "}
+                    causal price levels and{" "}
+                    <span className="font-mono text-foreground">
+                      {optimization.exitSearch.indicatorEventsAvailable}
+                    </span>{" "}
+                    indicator/relationship event rules. Families:{" "}
+                    {optimization.exitSearch.testedFamilies.join(", ")}.
+                  </div>
+                ) : null}
                 <OptimizationResults optimization={optimization} />
                 {optimization.recommendedCandidateId ? (
                   <div className="mt-4 rounded border border-border bg-background p-3">
@@ -772,8 +860,14 @@ function OptimizationResults({
                     : ""}
                 </td>
                 <td className="px-2 py-2">
-                  {candidate.config.entryMode} · {candidate.config.targetMode} ·{" "}
-                  {candidate.config.maxHoldBars} bars
+                  {candidate.config.entryMode} ·{" "}
+                  {candidate.config.stopFeatureLabel ??
+                    candidate.config.stopMode}{" "}
+                  stop ·{" "}
+                  {candidate.config.targetFeatureLabel ??
+                    candidate.config.exitFeatureLabel ??
+                    candidate.config.targetMode}{" "}
+                  exit · {candidate.config.maxHoldBars} bars
                 </td>
                 <td className="px-2 py-2 text-right font-mono">
                   {candidate.development.trades.length}

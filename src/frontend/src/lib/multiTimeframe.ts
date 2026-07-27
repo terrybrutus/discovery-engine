@@ -538,6 +538,17 @@ export function buildMultiTimeframeResearchSpace(
       matrix[id] = aligned;
     }
     if (target.instrumentKey === source.instrumentKey) {
+      // Execution-only price levels have no Feature record because absolute
+      // levels must never become discovery thresholds. Only same-instrument
+      // levels are meaningful as executable prices; excluding other symbols
+      // also prevents a large cross-universe memory expansion.
+      for (const [sourceKey, sourceValues] of Object.entries(sourceMatrix)) {
+        if (!sourceKey.startsWith("__exit_level__")) continue;
+        matrix[`${prefix}${sourceKey}`] = lazyAlignedSeries(
+          sourceValues,
+          alignedIndices,
+        );
+      }
       addDevelopingHigherTimeframeFeatures(
         target,
         source,
