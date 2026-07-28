@@ -21,8 +21,6 @@ interface EvaluatedPattern {
   candidate: OptimizedSystemCandidate | null;
 }
 
-const MAX_PATTERNS_TO_OPTIMIZE = 8;
-
 function researchPriority(pattern: Pattern): number {
   const independentTrades =
     pattern.executionComparison?.nonOverlapping.sampleSize ?? 0;
@@ -33,6 +31,12 @@ function researchPriority(pattern: Pattern): number {
     Math.max(0, pattern.liftVsBaseline ?? 0) / 20 -
     pattern.conditions.length * 0.08
   );
+}
+
+export function selectValidatedSystemPatterns(patterns: Pattern[]): Pattern[] {
+  return [...patterns]
+    .filter((pattern) => pattern.validationStatus === "held")
+    .sort((left, right) => researchPriority(right) - researchPriority(left));
 }
 
 function baseSimulationConfig(
@@ -89,16 +93,7 @@ export function SystemRecommendationPanel({
   const [error, setError] = useState("");
 
   const shortlist = useMemo(
-    () =>
-      [...patterns]
-        .filter(
-          (pattern) =>
-            pattern.validationStatus !== "degraded" &&
-            pattern.sampleSize >=
-              DEFAULT_SYSTEM_OPTIMIZER_CONFIG.minDevelopmentTrades,
-        )
-        .sort((left, right) => researchPriority(right) - researchPriority(left))
-        .slice(0, MAX_PATTERNS_TO_OPTIMIZE),
+    () => selectValidatedSystemPatterns(patterns),
     [patterns],
   );
 
@@ -108,7 +103,7 @@ export function SystemRecommendationPanel({
         evaluation,
       ): evaluation is EvaluatedPattern & {
         candidate: OptimizedSystemCandidate;
-      } => evaluation.candidate != null,
+      } => evaluation.candidate?.eligible === true,
     )
     // The sealed holdout remains pass/fail only. Cross-pattern ranking uses
     // information available before that holdout was opened.
@@ -117,6 +112,18 @@ export function SystemRecommendationPanel({
         right.candidate.scoreBeforeHoldout - left.candidate.scoreBeforeHoldout,
     );
   const recommended = eligible[0] ?? null;
+  const bestAvailable = evaluations
+    .filter(
+      (
+        evaluation,
+      ): evaluation is EvaluatedPattern & {
+        candidate: OptimizedSystemCandidate;
+      } => evaluation.candidate != null,
+    )
+    .sort(
+      (left, right) =>
+        right.candidate.scoreBeforeHoldout - left.candidate.scoreBeforeHoldout,
+    )[0];
 
   const run = async () => {
     if (running || shortlist.length === 0) return;
@@ -152,8 +159,7 @@ export function SystemRecommendationPanel({
           optimizerConfig: DEFAULT_SYSTEM_OPTIMIZER_CONFIG,
         });
         saveSystemOptimization(pattern.id, optimization);
-        const candidate =
-          optimization.candidates.find((item) => item.eligible) ?? null;
+        const candidate = optimization.candidates[0] ?? null;
         next.push({ pattern, optimization, candidate });
         setEvaluations([...next]);
         setCompleted(index + 1);
@@ -180,10 +186,10 @@ export function SystemRecommendationPanel({
             Automatic system recommendation
           </h3>
           <p className="mt-1 max-w-3xl text-xs leading-relaxed text-muted-foreground">
-            Tests the strongest {shortlist.length} non-degraded discoveries with
-            fixed, ATR, structural-price, and indicator-event exits, plus costs,
-            non-overlapping trades, walk-forward folds, and a sealed final
-            segment. It recommends nothing when nothing survives.
+            Tests all {shortlist.length} discoveries that actually passed
+            chronological validation with fixed, ATR, structural-price, and
+            indicator-event exits, plus costs, non-overlapping trades,
+            walk-forward folds, and a sealed final segment.
           </p>
         </div>
         <Button disabled={running || shortlist.length === 0} onClick={run}>
@@ -267,12 +273,41 @@ export function SystemRecommendationPanel({
         <div className="mt-4 rounded border border-warning/30 bg-warning/5 p-4">
           <div className="flex items-center gap-2 text-sm font-semibold text-warning">
             <TriangleAlert className="size-4" aria-hidden="true" />
-            No robust system found
+            No safeguard-clearing system yet
           </div>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            None of the shortlisted discoveries survived every safeguard. The
-            engine will not manufacture a recommendation from weak evidence.
+            None of the validated discoveries survived every safeguard. The
+            strongest available recipe is shown for diagnosis, but is not
+            labeled robust.
           </p>
+          {bestAvailable ? (
+            <div className="mt-3 rounded border border-warning/20 bg-background/70 p-3 text-xs">
+              <p className="font-medium text-foreground">
+                Best available research recipe
+              </p>
+              <p className="mt-1 text-muted-foreground">
+                {bestAvailable.candidate.recipe.oneSentenceRule}
+              </p>
+              <p className="mt-2 font-mono text-muted-foreground">
+                {bestAvailable.candidate.walkForward.profitableFolds}/
+                {bestAvailable.candidate.walkForward.folds} profitable folds ·{" "}
+                {bestAvailable.candidate.sealedHoldout.trades.length} final
+                trades ·{" "}
+                {bestAvailable.candidate.sealedHoldout.expectancyR.toFixed(2)}R
+                final expectancy · PF{" "}
+                {bestAvailable.candidate.sealedHoldout.profitFactor?.toFixed(
+                  2,
+                ) ?? "—"}
+              </p>
+              <Button
+                className="mt-3"
+                variant="outline"
+                onClick={() => onOpenPattern(bestAvailable.pattern)}
+              >
+                Open diagnostic recipe
+              </Button>
+            </div>
+          ) : null}
           <ul className="mt-3 space-y-1 text-xs text-muted-foreground">
             {evaluations.slice(0, 3).map((evaluation) => (
               <li key={evaluation.pattern.id}>

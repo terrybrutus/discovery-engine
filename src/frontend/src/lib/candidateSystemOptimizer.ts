@@ -96,7 +96,7 @@ export const DEFAULT_SYSTEM_OPTIMIZER_CONFIG: SystemOptimizerConfig = {
   minHoldoutExpectancyR: 0.1,
   minHoldoutProfitFactor: 1.3,
   costStressMultiplier: 2,
-  maxCandidates: 240,
+  maxCandidates: 720,
 };
 
 function uniqueNumbers(values: number[]): number[] {
@@ -494,6 +494,132 @@ function buildConstrainedGrid(
   return selected.slice(0, maximum);
 }
 
+function configKey(config: CandidateSimulationConfig): string {
+  return [
+    config.entryMode,
+    config.entryExpiryBars,
+    config.stopMode,
+    config.stopPct,
+    config.stopAtrMultiple,
+    config.stopFeatureId ?? "",
+    config.targetMode,
+    config.targetPct,
+    config.rewardRiskMultiple,
+    config.targetAtrMultiple,
+    config.targetFeatureId ?? "",
+    config.exitFeatureId ?? "",
+    config.exitFeatureOperator ?? "",
+    String(config.exitFeatureValue ?? ""),
+    config.maxHoldBars,
+    config.roundTripCostBps,
+  ].join("|");
+}
+
+/**
+ * Refines the strongest coarse configurations one dimension at a time. This
+ * spends the browser's bounded simulation budget near promising entry/exit
+ * recipes instead of selecting a few evenly spaced points from a grid that can
+ * contain hundreds of thousands of combinations.
+ */
+function buildRefinementGrid(
+  pattern: Pattern,
+  seeds: CandidateSimulationConfig[],
+  maximum: number,
+  excluded: Set<string>,
+): CandidateSimulationConfig[] {
+  if (maximum <= 0 || seeds.length === 0) return [];
+  const holds = uniqueNumbers([
+    1,
+    2,
+    3,
+    5,
+    8,
+    12,
+    21,
+    34,
+    pattern.horizon,
+    pattern.horizonAnalysis?.recommendedHorizon ?? pattern.horizon,
+  ]).filter((hold) => hold > 0 && hold <= 100);
+  const fixedStops = uniqueNumbers([
+    0.05,
+    0.1,
+    0.15,
+    0.25,
+    0.35,
+    0.5,
+    0.75,
+    1,
+    ...(pattern.avgMAE >= 0.02 && pattern.avgMAE <= 5
+      ? [Number(pattern.avgMAE.toFixed(3))]
+      : []),
+  ]);
+  const fixedTargets = uniqueNumbers([
+    0.05,
+    0.1,
+    0.15,
+    0.25,
+    0.35,
+    0.5,
+    0.75,
+    1,
+    ...(pattern.avgMFE >= 0.02 && pattern.avgMFE <= 10
+      ? [Number(pattern.avgMFE.toFixed(3))]
+      : []),
+  ]);
+  const atrMultiples = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3];
+  const rewardRiskMultiples = [0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3];
+  const entries: CandidateSimulationConfig["entryMode"][] =
+    patternSupportsBoxExecution(pattern)
+      ? ["next-open", "signal-close", "box-boundary-limit"]
+      : ["next-open", "signal-close"];
+  const refinements: CandidateSimulationConfig[] = [];
+  const add = (config: CandidateSimulationConfig) => {
+    if (refinements.length >= maximum) return;
+    const key = configKey(config);
+    if (excluded.has(key)) return;
+    excluded.add(key);
+    refinements.push(config);
+  };
+  for (const seed of seeds) {
+    for (const entryMode of entries) {
+      if (
+        (entryMode === "box-boundary-limit") !==
+        (seed.targetMode === "box-midpoint")
+      ) {
+        continue;
+      }
+      add({ ...seed, entryMode });
+    }
+    for (const maxHoldBars of holds) {
+      add({
+        ...seed,
+        maxHoldBars,
+        entryExpiryBars: Math.max(1, Math.min(8, maxHoldBars)),
+      });
+    }
+    if (seed.stopMode === "fixed-percent") {
+      for (const stopPct of fixedStops) add({ ...seed, stopPct });
+    } else if (seed.stopMode === "atr-multiple") {
+      for (const stopAtrMultiple of atrMultiples) {
+        add({ ...seed, stopAtrMultiple });
+      }
+    }
+    if (seed.targetMode === "fixed-percent") {
+      for (const targetPct of fixedTargets) add({ ...seed, targetPct });
+    } else if (seed.targetMode === "atr-multiple") {
+      for (const targetAtrMultiple of atrMultiples) {
+        add({ ...seed, targetAtrMultiple });
+      }
+    } else if (seed.targetMode === "risk-multiple") {
+      for (const rewardRiskMultiple of rewardRiskMultiples) {
+        add({ ...seed, rewardRiskMultiple });
+      }
+    }
+    if (refinements.length >= maximum) break;
+  }
+  return refinements;
+}
+
 function complexityPenalty(config: CandidateSimulationConfig): number {
   let penalty = 0;
   if (config.entryMode !== "next-open") penalty += 0.08;
@@ -722,47 +848,73 @@ export function optimizeCandidateSystem(input: {
     Math.floor(input.bars.length * (1 - holdoutFraction)),
   );
   const preHoldoutEndIndex = sealedHoldoutStartIndex - 1;
-  const grid = buildConstrainedGrid(
+  const availableIndependentSignals =
+    input.pattern.executionComparison?.nonOverlapping.sampleSize ??
+    input.pattern.sampleSize;
+  const minimumDevelopmentTrades = Math.min(
+    settings.minDevelopmentTrades,
+    Math.max(20, Math.floor(availableIndependentSignals * 0.6)),
+  );
+  const maximumCandidates = Math.max(20, settings.maxCandidates);
+  const coarseGrid = buildConstrainedGrid(
     input.pattern,
     input.baseConfig,
     input.matrix,
     input.features ?? [],
     preHoldoutEndIndex,
-    Math.max(20, settings.maxCandidates),
+    Math.min(240, maximumCandidates),
   );
-  const developmentEvaluations = grid.map((config, index) => {
-    const complexity = complexityPenalty(config);
-    const development = simulateCandidateSystem({
-      pattern: input.pattern,
-      bars: input.bars,
-      matrix: input.matrix,
-      config,
-      session: input.session,
-      signalStartIndex: 0,
-      signalEndIndex: preHoldoutEndIndex,
+  const evaluateGrid = (configs: CandidateSimulationConfig[], offset: number) =>
+    configs.map((config, index) => {
+      const complexity = complexityPenalty(config);
+      const development = simulateCandidateSystem({
+        pattern: input.pattern,
+        bars: input.bars,
+        matrix: input.matrix,
+        config,
+        session: input.session,
+        signalStartIndex: 0,
+        signalEndIndex: preHoldoutEndIndex,
+      });
+      const walkForward = walkForwardAudit(
+        input.pattern,
+        input.bars,
+        input.matrix,
+        input.session,
+        config,
+        preHoldoutEndIndex,
+        settings.walkForwardFolds,
+      );
+      const scoreBeforeHoldout =
+        objective(development, minimumDevelopmentTrades, complexity) +
+        walkForward.meanExpectancyR -
+        walkForward.stabilityDeltaR * 0.12;
+      return {
+        id: `${input.pattern.id}-system-${offset + index + 1}`,
+        config,
+        complexity,
+        development,
+        walkForward,
+        scoreBeforeHoldout,
+      };
     });
-    const walkForward = walkForwardAudit(
-      input.pattern,
-      input.bars,
-      input.matrix,
-      input.session,
-      config,
-      preHoldoutEndIndex,
-      settings.walkForwardFolds,
-    );
-    const scoreBeforeHoldout =
-      objective(development, settings.minDevelopmentTrades, complexity) +
-      walkForward.meanExpectancyR -
-      walkForward.stabilityDeltaR * 0.12;
-    return {
-      id: `${input.pattern.id}-system-${index + 1}`,
-      config,
-      complexity,
-      development,
-      walkForward,
-      scoreBeforeHoldout,
-    };
-  });
+  const coarseEvaluations = evaluateGrid(coarseGrid, 0);
+  const refinementSeeds = coarseEvaluations
+    .filter((candidate) => Number.isFinite(candidate.scoreBeforeHoldout))
+    .sort((left, right) => right.scoreBeforeHoldout - left.scoreBeforeHoldout)
+    .slice(0, 16)
+    .map((candidate) => candidate.config);
+  const excluded = new Set(coarseGrid.map(configKey));
+  const refinementGrid = buildRefinementGrid(
+    input.pattern,
+    refinementSeeds,
+    maximumCandidates - coarseGrid.length,
+    excluded,
+  );
+  const developmentEvaluations = [
+    ...coarseEvaluations,
+    ...evaluateGrid(refinementGrid, coarseGrid.length),
+  ];
   const finite = developmentEvaluations
     .filter((candidate) => Number.isFinite(candidate.scoreBeforeHoldout))
     .sort((a, b) => b.scoreBeforeHoldout - a.scoreBeforeHoldout);
@@ -833,7 +985,7 @@ export function optimizeCandidateSystem(input: {
     generatedAt: Date.now(),
     patternId: input.pattern.id,
     patternLabel: input.pattern.label,
-    candidatesTested: grid.length,
+    candidatesTested: developmentEvaluations.length,
     preHoldoutEndIndex,
     sealedHoldoutStartIndex,
     sealedHoldoutPct: holdoutFraction * 100,
@@ -841,10 +993,11 @@ export function optimizeCandidateSystem(input: {
     recommendedCandidateId: recommended?.id ?? null,
     candidates,
     methodology: [
-      "The parameter grid is deliberately constrained: fixed and ATR risk, reward:risk, bounded holds, exact causal price levels, indicator/relationship events, pattern invalidation, and available session-box execution.",
+      "The parameter search first samples every execution family, then refines entry, stop, target, and hold values around the strongest development-only recipes.",
       "Indicator thresholds and eligible event states are derived only from development history; the sealed final segment cannot define an exit.",
       "Absolute indicator prices are never mined as entry conditions. They are retained separately only so a discovered entry can test an exact executable stop or target.",
       "Candidates are ranked before the sealed final segment is opened.",
+      `A recipe needs at least ${minimumDevelopmentTrades} independent development trades before it can be ranked; this threshold scales down only when the validated pattern itself has fewer independent occurrences.`,
       "Walk-forward folds must be profitable in at least 75% of chronological test windows.",
       `The final holdout must contain at least ${settings.minHoldoutTrades} trades, at least ${settings.minHoldoutExpectancyR.toFixed(2)}R expectancy, and profit factor of at least ${settings.minHoldoutProfitFactor.toFixed(2)}.`,
       `The final holdout must remain profitable when round-trip costs are multiplied by ${settings.costStressMultiplier}, with at least 5 additional basis points applied.`,

@@ -9,6 +9,7 @@
     "copy:env": "cp env.json dist/",
     "test:alignment": "node alignment-check.mjs",
     "test:opening-reversal": "node opening-reversal-check.mjs",
+    "test:system-pipeline": "node system-pipeline-check.mjs",
     "typecheck": "tsc --noEmit",
     "check": "biome check src",
     "fix": "biome check --write src"

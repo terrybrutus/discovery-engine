@@ -1281,8 +1281,7 @@ export const useEngineStore = create<EngineState>((set, get) => ({
         discoveryProgress: {
           ...get().discoveryProgress,
           found: allPatterns.length,
-          current:
-            "Validating the same target-balanced 20-pattern cohort used by the Validation page…",
+          current: `Validating all ${validationCohort.length} report candidates before system construction…`,
         },
       });
       const cohortByTarget = new Map<string, Pattern[]>();

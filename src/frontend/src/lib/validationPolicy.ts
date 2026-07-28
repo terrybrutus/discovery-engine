@@ -1,6 +1,9 @@
 import type { ValidationResult } from "@/types";
 
-export const VALIDATION_COHORT_LIMIT = 20;
+// Every pattern that can reach reporting or system construction must receive
+// the same chronological validation. Leaving most displayed patterns marked
+// "not-tested" allowed them to outrank the few patterns that actually held up.
+export const VALIDATION_COHORT_LIMIT = 100;
 export const MIN_OUT_OF_SAMPLE_OCCURRENCES = 20;
 
 export function validationHeldUp(
