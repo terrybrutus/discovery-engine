@@ -4,6 +4,7 @@ import { DatasetSelector } from "@/components/DatasetSelector";
 import { DiscoveryControls } from "@/components/DiscoveryControls";
 import { EconomicViabilityControls } from "@/components/EconomicViabilityControls";
 import { EmptyState } from "@/components/EmptyState";
+import { OpeningReversalResearchPanel } from "@/components/OpeningReversalResearchPanel";
 import { PatternDetailModal } from "@/components/PatternDetailModal";
 import { PatternResultsTable } from "@/components/PatternResultsTable";
 import { SystemRecommendationPanel } from "@/components/SystemRecommendationPanel";
@@ -543,6 +544,8 @@ export default function PatternDiscoveryPage() {
               </CardContent>
             </Card>
           ) : null}
+
+          <OpeningReversalResearchPanel />
 
           {/* Results table or pre-run empty state */}
           {hasResults ? (
